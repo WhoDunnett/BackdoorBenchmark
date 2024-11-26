@@ -163,7 +163,6 @@ class FST(defense):
         model.load_state_dict(self.attack_result['model'])
         model.to(args.device)
         model.eval()
-        model.requires_grad_(False)
 
         self.model = model
 
@@ -218,23 +217,29 @@ class FST(defense):
         original_weights = None
         new_layer = None
         
-        if args.model == 'preactresnet18':
-            original_weights = model.linear.weight.data.clone()
-            model.linear = nn.Linear(model.linear.in_features, args.num_classes).to(args.device)
-            new_layer = model.linear
-        elif args.model == 'vgg19_bn':
-            original_weights = model.classifier[6].weight.data.clone()
-            model.classifier[6] = nn.Linear(model.classifier[6].in_features, args.num_classes).to(args.device)
-            new_layer = model.classifier[6]
-        elif args.model == "mobilenet_v3_large":
-            original_weights = model.classifier[3].weight.data.clone()
-            model.classifier[3] = nn.Linear(model.classifier[3].in_features, args.num_classes).to(args.device)
-            new_layer = model.classifier[3]
-        elif args.model == "efficientnet_b3":
-            original_weights = model.classifier[1].weight.data.clone()
-            model.classifier[1] = nn.Linear(model.classifier[1].in_features, args.num_classes).to(args.device)
-            new_layer = model.classifier[1]
+        # Ensure each parameter requires a gradient
+        for name, param in model.named_parameters():
+            param.requires_grad = True   
         
+        if args.model == 'preactresnet18':
+            original_weights = [model.linear.weight.data.clone()]
+            model.linear = nn.Linear(model.linear.in_features, args.num_classes).to(args.device)
+            new_layer = [model.linear]
+        elif args.model == 'vgg19_bn':
+            original_weights = [model.classifier[0].weight.data.clone(), model.classifier[3].weight.data.clone(), model.classifier[6].weight.data.clone()]
+            model.classifier[0] = nn.Linear(model.classifier[0].in_features, model.classifier[0].out_features).to(args.device)
+            model.classifier[3] = nn.Linear(model.classifier[3].in_features, model.classifier[3].out_features).to(args.device)
+            model.classifier[6] = nn.Linear(model.classifier[6].in_features, args.num_classes).to(args.device)
+            new_layer = [model.classifier[0], model.classifier[3], model.classifier[6]]
+        elif args.model == "mobilenet_v3_large":
+            original_weights = [model.classifier[0].weight.data.clone(), model.classifier[3].weight.data.clone()]
+            model.classifier[0] = nn.Linear(model.classifier[0].in_features, model.classifier[0].out_features).to(args.device)
+            model.classifier[3] = nn.Linear(model.classifier[3].in_features, args.num_classes).to(args.device)
+            new_layer = [model.classifier[0], model.classifier[3]]
+        elif args.model == "efficientnet_b3":
+            original_weights = [model.classifier[1].weight.data.clone()]
+            model.classifier[1] = nn.Linear(model.classifier[1].in_features, args.num_classes).to(args.device)
+            new_layer = [model.classifier[1]]
         else:
             raise Exception("Model not supported")
         
@@ -257,7 +262,9 @@ class FST(defense):
                 outputs = model(inputs)
                 
                 # Loss 1 is the inner product of the original weights and the new weights
-                inner_product = torch.sum(original_weights * new_layer.weight.data)
+                inner_product = torch.tensor(0.0).to(args.device)
+                for i in range(len(original_weights)):
+                    inner_product += torch.sum(original_weights[i] * new_layer[i].weight.data)
                 
                 # Loss 2 is the cross entropy loss
                 ce_loss = critierion(outputs, labels)
@@ -265,16 +272,21 @@ class FST(defense):
                 # Total loss and backpropagation
                 loss = ce_loss + (args.alpha * inner_product)
                 loss.backward()
+                
                 optimizer.step()
                 
                 batch_loss = loss.item()
                 epoch_loss += batch_loss
                 
+                # Normalize the weights
+                for i in range(len(original_weights)):
+                    new_layer[i].weight.data = (new_layer[i].weight.data / torch.norm(new_layer[i].weight.data, p=2)) * torch.norm(original_weights[i], p=2)
+                
             scheduler.step()
             
-            acc, asr, ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), args)
-            logging.info(f'Epoch {epoch}  loss:{epoch_loss}  acc:{acc}  asr:{asr}  ra:{ra}')
-            training_acc.append(acc), training_asr.append(asr), trianing_ra.append(ra)
+            #acc, asr, ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), args)
+            #logging.info(f'Epoch {epoch}  loss:{epoch_loss}  acc:{acc}  asr:{asr}  ra:{ra}')
+            #training_acc.append(acc), training_asr.append(asr), trianing_ra.append(ra)
         
          # ------------------------------- Final Test -------------------------------
         test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), self.args)
