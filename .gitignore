@@ -13,7 +13,7 @@ __pycache__/
 *.pt
 *.gz
 
-python_wavelets
+pytorch_wavelets/
 record/
 record_cifar10/
 record_gtsrb/
