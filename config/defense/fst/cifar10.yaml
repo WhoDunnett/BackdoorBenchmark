@@ -8,7 +8,7 @@ input_width:
 input_channel:
 
 batch_size: 256
-num_workers: 4
+num_workers: 0 
 
 training_epochs: 10
 lr: 0.01
