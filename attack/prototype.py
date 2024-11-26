@@ -6,7 +6,9 @@ import os
 import sys
 import yaml
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 import argparse
 from pprint import pformat
@@ -64,7 +66,12 @@ class NormalCase:
                             help='(Optional) should be time str + given unique identification str')
         parser.add_argument('--git_hash', type=str,
                             help='git hash number, in order to find which version of code is used')
-        parser.add_argument("--yaml_path", type=str, default="./config/attack/prototype/cifar10.yaml")
+        parser.add_argument("--yaml_path", type=str, default="../config/attack/prototype/cifar10.yaml")
+        
+        # #####################################
+        # Modified to remove the need to save to record
+        # #####################################
+        parser.add_argument("--save_folder_base", type=str, default="../record")
         return parser
 
     def add_yaml_to_args(self, args):
@@ -78,7 +85,6 @@ class NormalCase:
         args.num_classes = get_num_classes(args.dataset)
         args.input_height, args.input_width, args.input_channel = get_input_shape(args.dataset)
         args.img_size = (args.input_height, args.input_width, args.input_channel)
-        args.dataset_path = f"{args.dataset_path}/{args.dataset}"
         return args
 
     def prepare(self, args):
@@ -88,10 +94,11 @@ class NormalCase:
                 run_info=('afterwards' if 'load_path' in args.__dict__ else 'attack') + '_' + (
                     args.attack if 'attack' in args.__dict__ else "prototype"),
                 given_load_file_path=args.load_path if 'load_path' in args else None,
-                all_record_folder_path='./record',
+                all_record_folder_path=args.save_folder_base,
             )
         else:
-            save_path = './record/' + args.save_folder_name
+            # Changed to use the save_folder_base
+            save_path = args.save_folder_base + os.sep + args.save_folder_name
             os.mkdir(save_path)
         args.save_path = save_path
 

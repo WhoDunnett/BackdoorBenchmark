@@ -53,13 +53,21 @@ class SimpleAdditiveTrigger(object):
     def __init__(self,
                  trigger_array : np.ndarray,
                  ):
-        self.trigger_array = trigger_array.astype(np.float)
+        ###############################
+        # Modified to be compatible with numpy
+        # Old: self.trigger_array = trigger_array.astype(np.float)
+        ###############################
+        self.trigger_array = trigger_array.astype(np.float64)
 
     def __call__(self, img, target = None, image_serial_id = None):
         return self.add_trigger(img)
 
     def add_trigger(self, img):
-        return np.clip(img.astype(np.float) + self.trigger_array, 0, 255).astype(np.uint8)
+        ###############################
+        # Modified to be compatible with numpy version
+        # Old: np.clip(img.astype(np.float) + self.trigger_array, 0, 255).astype(np.uint8)
+        ###############################
+        return np.clip(img.astype(np.float64) + self.trigger_array, 0, 255).astype(np.uint8)
 
 import matplotlib.pyplot as plt
 def test_Simple():

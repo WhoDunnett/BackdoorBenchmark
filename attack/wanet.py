@@ -48,7 +48,9 @@ import logging
 import os
 import sys
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 import argparse
 import numpy as np
@@ -62,6 +64,7 @@ from torchvision.transforms import ToPILImage
 
 to_pil = ToPILImage()
 from torch.utils.data import DataLoader
+import pandas as pd
 
 from utils.aggregate_block.dataset_and_transform_generate import get_dataset_normalization, get_dataset_denormalization
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
@@ -70,7 +73,7 @@ from utils.save_load_attack import save_attack_result
 from utils.aggregate_block.train_settings_generate import argparser_opt_scheduler
 from attack.badnet import add_common_attack_args, BadNet
 from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform
-from utils.trainer_cls import all_acc, given_dataloader_test, general_plot_for_epoch
+from utils.trainer_cls import all_acc, given_dataloader_test, general_plot_for_epoch, given_dataloader_test_v2
 
 
 def generalize_to_lower_pratio(pratio, bs):
@@ -151,7 +154,7 @@ class Wanet(BadNet):
 
     def set_bd_args(cls, parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         parser = add_common_attack_args(parser)
-        parser.add_argument('--bd_yaml_path', type=str, default='./config/attack/wanet/default.yaml',
+        parser.add_argument('--bd_yaml_path', type=str, default='../config/attack/wanet/default.yaml',
                             help='path for yaml file provide additional default attributes')
         parser.add_argument("--cross_ratio", type=float, )  # default=2)  # rho_a = pratio, rho_n = pratio * cross_ratio
         parser.add_argument("--random_rotation", type=int, )  # default=10)
@@ -503,8 +506,6 @@ class Wanet(BadNet):
                 # Create backdoor data
                 num_bd = int(generalize_to_lower_pratio(rate_bd, bs))  # int(bs * rate_bd)
                 num_cross = int(num_bd * args.cross_ratio)
-                grid_temps = (identity_grid + args.s * noise_grid / args.input_height) * args.grid_rescale
-                grid_temps = torch.clamp(grid_temps, -1, 1)
 
                 ins = torch.rand(num_cross, args.input_height, args.input_height, 2).to(self.device,
                                                                                         non_blocking=args.non_blocking) * 2 - 1
@@ -538,6 +539,27 @@ class Wanet(BadNet):
                         bd_label=int(target_changed[idx_in_batch]),
                         label=int(targets[idx_in_batch]),
                     )
+
+        # ------------------------- Final Testing Method -------------------------
+        # Get the final results for
+        
+        bd_test_dataset_with_transform = dataset_wrapper_with_transform(
+            self.bd_test_dataset,
+            clean_test_dataset_with_transform.wrap_img_transform,
+        )
+
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(netC, clean_test_dataset_with_transform, bd_test_dataset_with_transform, torch.nn.CrossEntropyLoss(), args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
 
         save_attack_result(
             model_name=args.model,

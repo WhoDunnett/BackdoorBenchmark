@@ -347,6 +347,36 @@ class prepro_cls_DatasetBD_v2(torch.utils.data.Dataset):
         self.original_index_array = state_file["original_index_array"]
         self.poison_indicator = state_file["poison_indicator"]
         self.save_folder_path = state_file["save_folder_path"]
+        
+    ################################################
+    # Modification required for SPC to work
+    # This function gets the number of samples per class
+    ################################################
+    def get_sample_by_class(self, samples_per_class):
+        index_class_dict = self.get_index_class_dict()
+
+        chosen_class_index = {}
+        for label, index_list in index_class_dict.items():
+
+            if len(index_list) > samples_per_class:
+                chosen_class_index[label] = np.random.choice(index_list, samples_per_class, replace=False)
+            else:
+                raise ValueError(f"Class {label} has less than {samples_per_class} samples")
+
+        return chosen_class_index
+
+    ################################################
+    # Modification required for SPC to work
+    # This function is used to get the index of samples by class
+    ################################################
+    def get_index_class_dict(self):
+        index_class_dict = {}
+        for index in self.original_index_array:
+            img, label = self.dataset[index]
+            if label not in index_class_dict:
+                index_class_dict[label] = []
+            index_class_dict[label].append(index)
+        return index_class_dict
 
 
 class xy_iter(torch.utils.data.dataset.Dataset):
@@ -368,4 +398,42 @@ class xy_iter(torch.utils.data.dataset.Dataset):
     def __len__(self):
         return len(self.targets)
 
+################################################
+# Modification required for SPC to work
+# This function is used to sample samples_per_class samples from each class
+################################################
+def spc_choose_poisoned_sample(
+    dataset: prepro_cls_DatasetBD_v2,
+    samples_per_class: int,
+    val_ratio: float = 0
+):
+    
+    # If val_ratio is 0, we do not need to choose the validation set and ensure that the number of samples is greater than 1
+    if val_ratio > 0:
+        num_val_samples = int(samples_per_class * val_ratio)
 
+        if num_val_samples < 1:
+            num_val_samples = 1
+            samples_per_class = samples_per_class + 1
+
+    # Get the set of indices for each class
+    chosen_class_index = dataset.get_sample_by_class(samples_per_class)
+
+    # If val_ratio is 0, we do not need to choose the validation set
+    if val_ratio > 0:
+
+        val_sample_indexs = []
+        train_sample_indexs = []
+
+        for label, index_list in chosen_class_index.items():
+            val_sample_indexs.extend(index_list[:num_val_samples])
+            train_sample_indexs.extend(index_list[num_val_samples:])
+
+        return train_sample_indexs, val_sample_indexs
+
+    else:
+        train_sample_indexs = []
+        for label, index_list in chosen_class_index.items():
+            train_sample_indexs.extend(index_list)
+
+        return train_sample_indexs, None

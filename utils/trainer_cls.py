@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 
 from utils.prefetch import PrefetchLoader, prefetch_transform
 from utils.bd_dataset import prepro_cls_DatasetBD
+import copy
 
 
 def seed_worker(worker_id):
@@ -647,6 +648,79 @@ def given_dataloader_test(
         return metrics, None, None
     elif verbose == 1:
         return metrics, torch.cat(batch_predict_list), torch.cat(batch_label_list)
+
+# ############################################
+# Method used to test ACC, ASR, RA in one function
+# ############################################
+def given_dataloader_test_v2(
+    model,
+    test_dataset,
+    bd_test_dataset,
+    criterion,
+    args,
+
+):
+    # ----------------- Clean -----------------
+
+    clean_dataloader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        drop_last=False,
+        pin_memory=args.pin_memory,
+        num_workers=args.num_workers,
+    )
+
+    test_acc = given_dataloader_test(
+        model,
+        clean_dataloader,
+        criterion,
+        args.non_blocking,
+        args.device,
+    )[0]['test_acc']
+
+    # # ----------------- BD -----------------
+    
+    bd_dataloader = DataLoader(
+        bd_test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        drop_last=False,
+        pin_memory=args.pin_memory,
+        num_workers=args.num_workers,
+    )
+
+    bd_test_acc = given_dataloader_test(
+        model,
+        bd_dataloader,
+        criterion,
+        args.non_blocking,
+        args.device,
+    )[0]['test_acc']
+
+    # ----------------- RA -----------------
+    ra_dataset = copy.deepcopy(bd_test_dataset)
+    ra_dataset.wrapped_dataset.getitem_all_switch = True
+    ra_dataset.wrapped_dataset.getitem_all = True
+
+    ra_dataloader = DataLoader(
+        ra_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        drop_last=False,
+        pin_memory=args.pin_memory,
+        num_workers=args.num_workers,
+    )
+
+    bd_test_ra = given_dataloader_test(
+        model,
+        ra_dataloader,
+        criterion,
+        args.non_blocking,
+        args.device,
+    )[0]['test_acc']
+
+    return test_acc, bd_test_acc, bd_test_ra
 
 def test_given_dataloader_on_mix(model, test_dataloader,  criterion, device = None, non_blocking=True, verbose = 0):
 

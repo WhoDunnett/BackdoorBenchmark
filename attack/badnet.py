@@ -24,12 +24,15 @@ import os
 import sys
 import yaml
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 import argparse
 import numpy as np
 import torch
 import logging
+import pandas as pd
 
 from utils.backdoor_generate_poison_index import generate_poison_index_from_label_transform
 from utils.aggregate_block.bd_attack_generate import bd_attack_img_trans_generate, bd_attack_label_trans_generate
@@ -38,7 +41,7 @@ from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.aggregate_block.train_settings_generate import argparser_opt_scheduler, argparser_criterion
 from utils.save_load_attack import save_attack_result
 from attack.prototype import NormalCase
-from utils.trainer_cls import BackdoorModelTrainer
+from utils.trainer_cls import BackdoorModelTrainer, given_dataloader_test_v2
 from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform
 
 
@@ -247,6 +250,21 @@ class BadNet(NormalCase):
             prefetch_transform_attr_name="ori_image_transform_in_loading",  # since we use the preprocess_bd_dataset
             non_blocking=args.non_blocking,
         )
+        
+        # ------------------------- Final Testing Method -------------------------
+        # Get the final results for
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(trainer.model, clean_test_dataset_with_transform, bd_test_dataset_with_transform, criterion, self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
 
         save_attack_result(
             model_name=args.model,
@@ -262,6 +280,7 @@ class BadNet(NormalCase):
 
 
 if __name__ == '__main__':
+
     attack = BadNet()
     parser = argparse.ArgumentParser(description=sys.argv[0])
     parser = attack.set_args(parser)

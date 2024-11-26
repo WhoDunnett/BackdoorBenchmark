@@ -51,7 +51,9 @@ import logging
 import os
 import sys
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 from attack.badnet import BadNet, add_common_attack_args
 from utils.aggregate_block.dataset_and_transform_generate import get_num_classes, get_input_shape
@@ -62,7 +64,7 @@ class LowFrequency(BadNet):
     def set_bd_args(cls, parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         parser = add_common_attack_args(parser)
         parser.add_argument('--lowFrequencyPatternPath', type=str)
-        parser.add_argument('--bd_yaml_path', type=str, default='./config/attack/lf/default.yaml',
+        parser.add_argument('--bd_yaml_path', type=str, default='../config/attack/lf/default.yaml',
                             help='path for yaml file provide additional default attributes')
         return parser
 
@@ -71,10 +73,9 @@ class LowFrequency(BadNet):
         args.num_classes = get_num_classes(args.dataset)
         args.input_height, args.input_width, args.input_channel = get_input_shape(args.dataset)
         args.img_size = (args.input_height, args.input_width, args.input_channel)
-        args.dataset_path = f"{args.dataset_path}/{args.dataset}"
 
         if ('lowFrequencyPatternPath' not in args.__dict__) or (args.lowFrequencyPatternPath is None):
-            args.lowFrequencyPatternPath = f"./resource/lowFrequency/{args.dataset}_{args.model}_0_255.npy"
+            args.lowFrequencyPatternPath = f"../resource/lowFrequency/{args.dataset}_{args.model}_0_255.npy"
             logging.info(f"args.lowFrequencyPatternPath does not found, so = {args.lowFrequencyPatternPath}")
 
         return args

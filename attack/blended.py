@@ -21,7 +21,9 @@ import argparse
 import os
 import sys
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 from attack.badnet import BadNet, add_common_attack_args
 

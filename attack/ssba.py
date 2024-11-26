@@ -33,7 +33,9 @@ import logging
 import os
 import sys
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 from attack.badnet import BadNet, add_common_attack_args
 from utils.aggregate_block.dataset_and_transform_generate import get_num_classes, get_input_shape
@@ -46,7 +48,7 @@ class SSBA(BadNet):
         parser = add_common_attack_args(parser)
         parser.add_argument('--attack_train_replace_imgs_path', type=str)
         parser.add_argument('--attack_test_replace_imgs_path', type=str)
-        parser.add_argument('--bd_yaml_path', type=str, default='./config/attack/ssba/default.yaml',
+        parser.add_argument('--bd_yaml_path', type=str, default='../config/attack/ssba/default.yaml',
                             help='path for yaml file provide additional default attributes')
         return parser
 
@@ -56,15 +58,14 @@ class SSBA(BadNet):
         args.num_classes = get_num_classes(args.dataset)
         args.input_height, args.input_width, args.input_channel = get_input_shape(args.dataset)
         args.img_size = (args.input_height, args.input_width, args.input_channel)
-        args.dataset_path = f"{args.dataset_path}/{args.dataset}"
 
         if ('attack_train_replace_imgs_path' not in args.__dict__) or (args.attack_train_replace_imgs_path is None):
-            args.attack_train_replace_imgs_path = f"./resource/ssba/{args.dataset}_ssba_train_b1.npy"
+            args.attack_train_replace_imgs_path = f"../resource/ssba/{args.dataset}_ssba_train_b1.npy"
             logging.info(
                 f"args.attack_train_replace_imgs_path does not found, so = {args.attack_train_replace_imgs_path}")
 
         if ('attack_test_replace_imgs_path' not in args.__dict__) or (args.attack_test_replace_imgs_path is None):
-            args.attack_test_replace_imgs_path = f"./resource/ssba/{args.dataset}_ssba_test_b1.npy"
+            args.attack_test_replace_imgs_path = f"../resource/ssba/{args.dataset}_ssba_test_b1.npy"
             logging.info(
                 f"args.attack_test_replace_imgs_path does not found, so = {args.attack_test_replace_imgs_path}")
 

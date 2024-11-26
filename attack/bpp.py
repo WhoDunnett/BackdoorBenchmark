@@ -51,12 +51,16 @@ import sys, os, logging
 import os
 import sys
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 import time
 import argparse
 from torchvision.transforms import ToPILImage
 from torchvision.transforms import ToTensor
+
+import pandas as pd
 
 to_pil = ToPILImage()
 to_tensor = ToTensor()
@@ -77,7 +81,7 @@ from utils.save_load_attack import save_attack_result
 from utils.aggregate_block.train_settings_generate import argparser_opt_scheduler
 from attack.badnet import add_common_attack_args, BadNet
 from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform
-from utils.trainer_cls import all_acc, given_dataloader_test, general_plot_for_epoch
+from utils.trainer_cls import all_acc, given_dataloader_test, general_plot_for_epoch, given_dataloader_test_v2
 
 
 def generalize_to_lower_pratio(pratio, bs):
@@ -260,7 +264,7 @@ class Bpp(BadNet):
 
     def set_bd_args(cls, parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         parser = add_common_attack_args(parser)
-        parser.add_argument('--bd_yaml_path', type=str, default='./config/attack/bpp/default.yaml',
+        parser.add_argument('--bd_yaml_path', type=str, default='../config/attack/bpp/default.yaml',
                             help='path for yaml file provide additional default attributes')
 
         parser.add_argument("--neg_ratio", type=float, )  # default=0.2)  
@@ -837,6 +841,26 @@ class Bpp(BadNet):
                         label=int(targets[idx_in_batch]),
                     )
 
+        # ------------------------- Final Testing Method -------------------------
+        # Get the final results for
+        
+        bd_test_dataset_with_transform = dataset_wrapper_with_transform(
+            self.bd_test_r_dataset,
+            clean_test_dataset_with_transform.wrap_img_transform,
+        )
+
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(netC, clean_test_dataset_with_transform, bd_test_dataset_with_transform, torch.nn.CrossEntropyLoss(), self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
 
         save_attack_result(
             model_name=args.model,
@@ -849,7 +873,6 @@ class Bpp(BadNet):
             bd_test=self.bd_test_r_dataset,
             save_path=args.save_path,
         )
-        print("done")
 
     def train_step(self, netC, optimizerC, schedulerC, clean_train_dataloader, args):
         logging.info(" Train:")

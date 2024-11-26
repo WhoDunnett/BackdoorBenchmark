@@ -47,8 +47,13 @@ import os
 import sys
 import time
 import torch
+import copy
 
-sys.path = ["./"] + sys.path
+import pandas as pd
+
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 import numpy as np
 from copy import deepcopy
@@ -63,7 +68,7 @@ from utils.aggregate_block.dataset_and_transform_generate import get_dataset_nor
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.trainer_cls import Metric_Aggregator
 from utils.save_load_attack import save_attack_result
-from utils.trainer_cls import all_acc, given_dataloader_test, general_plot_for_epoch
+from utils.trainer_cls import all_acc, given_dataloader_test, general_plot_for_epoch, given_dataloader_test_v2
 from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform
 
 term_width = int(60)
@@ -291,7 +296,7 @@ class InputAware(BadNet):
 
         parser = add_common_attack_args(parser)
 
-        parser.add_argument('--bd_yaml_path', type=str, default='./config/attack/inputaware/default.yaml',
+        parser.add_argument('--bd_yaml_path', type=str, default='../config/attack/inputaware/default.yaml',
                             help='path for yaml file provide additional default attributes')
 
         parser.add_argument("--lr_G", type=float, )  # default=1e-2)
@@ -673,6 +678,25 @@ class InputAware(BadNet):
                         label=int(targets1[idx_in_batch]),
                     )
 
+        # ------------------------- Final Testing Method -------------------------
+        bd_test_dataset_with_transform = dataset_wrapper_with_transform(
+            self.bd_test_dataset,
+            clean_test_dataset_with_transform.wrap_img_transform,
+        )
+
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(netC, clean_test_dataset_with_transform, bd_test_dataset_with_transform, torch.nn.CrossEntropyLoss(), self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
+
         save_attack_result(
             model_name=args.model,
             num_classes=args.num_classes,
@@ -682,7 +706,7 @@ class InputAware(BadNet):
             clean_data=args.dataset,
             bd_train=bd_train_dataset,
             bd_test=self.bd_test_dataset,
-            save_path=args.save_path,
+            save_path=args.save_path
         )
 
     def train_mask_step(self, netM, optimizerM, schedulerM, train_dataloader1, train_dataloader2, args):
@@ -1120,6 +1144,7 @@ if __name__ == '__main__':
     attack.add_yaml_to_args(args)
     args = attack.process_args(args)
     attack.prepare(args)
+
     attack.stage1_non_training_data_prepare()
     attack.stage2_training()
 

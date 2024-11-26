@@ -33,7 +33,9 @@ import torch
 
 import numpy as np
 
-sys.path = ["./"] + sys.path
+os.chdir(sys.path[0])
+sys.path.append('../')
+os.getcwd()
 
 from attack.badnet import BadNet, add_common_attack_args
 from utils.backdoor_generate_poison_index import generate_poison_index_from_label_transform
@@ -48,7 +50,7 @@ class SIG(BadNet):
         parser = add_common_attack_args(parser)
         parser.add_argument("--sig_f", type=float)
 
-        parser.add_argument('--bd_yaml_path', type=str, default='./config/attack/sig/default.yaml',
+        parser.add_argument('--bd_yaml_path', type=str, default='../config/attack/sig/default.yaml',
                             help='path for yaml file provide additional default attributes')
         return parser
 
