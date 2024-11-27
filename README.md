@@ -1,3 +1,85 @@
+# Countering Backdoor Attacks in Image Recognition: A Survey and Evaluation of Mitigation Strategies
+This fork of BackdoorBench contains the modifications made to perform the evaluation conducted in our paper (https://arxiv.org/abs/2411.11200). Full credit to the original producers of BackdoorBench as much of this code remains the same. The modifications that have been made are listed below.
+
+Corresponding Author: kealan.dunnett@hdr.qut.edu.au (Kealan Dunnett)
+
+## Compatible Defenses
+Below we list the compatible defenses and provide an example command that can be used to run them.
+- ANP (NOT Migrated)
+- AWN (NOT Migrated)
+- BNP (NOT Migrated)
+- CLP (NOT Migrated)
+- FP (NOT Migrated)
+- FT (NOT Migrated)
+- FST (Migrated TESTED)
+```
+python defense/fst.py --yaml_path ../config/defense/fst/cifar10.yaml --model MODEL_NAME --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file ATTACK_MODEL_FOLDER
+```
+- FT-SAM (NOT Migrated)
+- i-BAU (NOT Migrated)
+- NAD (NOT Migrated)
+- NC (NOT Migrated)
+- NPD (NOT Migrated)
+- PBE (NOT Migrated)
+- RNP (NOT Migrated)
+- SAU (NOT Migrated)
+- MM-BD (NOT Migrated)
+
+#### Major Changes
+- Each defence is evaluated after training is complete with the results saved to a file called "final_result.csv"
+- Each method is changed to be compatible with the Samples Per Class (SPC) data availability metric (Note: ratio can still be used)
+- The full path to the folder containing the attack model is the combination of "--result_base" (i.e., the old "record" folder) and "--result_file" (i.e., the subfolder in "--result_base").
+    - See "Other Changes" if this is confusing 
+
+## Compatible Attacks
+Below we list the compatible attacks and provide an example command that can be used to run them.
+- BadNet
+```
+python attack/badnet.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/badnet/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name badnet_test
+```
+- Blended
+```
+python attack/blended.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/blended/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name blended_test
+```
+- LF
+```
+python attack/lf.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/lf/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name lf_test
+```
+- Signal
+```
+python attack/sig.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/sig/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name sig_test
+```
+- SSBA
+```
+python attack/ssba.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/ssba/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name ssba_test --attack_train_replace_imgs_path ../data/ssba_cifar10/train_numpy.npy --attack_test_replace_imgs_path ../data/ssba_cifar10/test_numpy.npy
+```
+- IAB
+```
+python attack/inputaware.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/inputaware/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name inputaware_test
+```
+- WaNet
+```
+python attack/wanet.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/wanet/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name wanet_test
+```
+- BPP
+```
+python attack/bpp.py --yaml_path ../config/models/cifar10/preactresnet18.yaml --bd_yaml_path ../config/attack/bpp/default.yaml --save_folder_base ../record_cifar10 --pratio 0.1 --save_folder_name bpp_test
+```
+
+### Major Changes
+- Evaluation method "given_dataloader_test_v2" was added to get ACC, ASR and RA metrics more easily.
+- Each attack is evaluated after training is complete with the results saved to a file called "final_result.csv"
+
+Note: Other attacks are present within the original repository. We excluded certain attacks from our evaluation and, as a result, removed them from this repository.
+
+## Other Changes
+- The dependence on a "record" folder has been removed. Instead, attacks and defences use a "result_base" argument to specify where to save the resulting model. Both the attack and defence scripts use this as the base path that contain the folders "--result_file" and "--save_folder_name" reference
+    - Attack Example: The arguments "--save_folder_base ../record_cifar10 --save_folder_name wanet_test" will save to "../record_cifar10/wanet_test"
+    - Defense Example: The arguments "--result_base ../record_cifar10 --result_file ATTACK_MODEL_FOLDER" will use the attack in "../record_cifar10/ATTACK_MODEL_FOLDER"
+- A set of pre-made "yaml_path" files have been created for each model and dataset configuration. These are in the "config/models" folder.
+
+# ------ Below is the original read me ------
+
 <img src="resource/pyg_logo.png" style="height: 60px;" align="right">
 
 # BackdoorBench: a comprehensive benchmark of backdoor attack and defense methods
