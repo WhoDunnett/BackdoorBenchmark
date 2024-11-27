@@ -36,7 +36,9 @@ import os,sys
 import numpy as np
 import torch
 import torch.nn as nn
+import pandas as pd
 
+os.chdir(sys.path[0])
 sys.path.append('../')
 sys.path.append(os.getcwd())
 
@@ -47,14 +49,14 @@ import time
 from defense.base import defense
 import utils.defense_utils.mbns.mbns_model as mbns_model
 from utils.aggregate_block.train_settings_generate import argparser_criterion
-from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer, general_plot_for_epoch
+from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer, general_plot_for_epoch, given_dataloader_test_v2
 from utils.choose_index import choose_index
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.log_assist import get_git_info
 from utils.aggregate_block.dataset_and_transform_generate import get_input_shape, get_num_classes, get_transform
 from utils.save_load_attack import load_attack_result, save_defense_result
-from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2
+from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, spc_choose_poisoned_sample
 
 def batch_entropy(x, step_size=0.1):
 	n_bars = int((x.max()-x.min())/step_size)
@@ -67,10 +69,15 @@ def batch_entropy(x, step_size=0.1):
 
 def bnp_defense(net, u, trainloader, args):
 	clean_data_loader = trainloader['clean_train']
-	bd_data_loader = trainloader['bd_train']
+
+	##############################################
+	# REMOVING to only test the clean case
+ 	##############################################
+	#bd_data_loader = trainloader['bd_train']
+	#bd_data = next(iter(bd_data_loader))[0].to(args.device)
+
 	net.eval()
-	bd_data = iter(bd_data_loader).next()[0].to(args.device)
-	mixture_data = iter(clean_data_loader).next()[0].to(args.device)
+	
 	params = net.state_dict()
 	for m in net.modules():
 		if isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.LayerNorm):
@@ -79,35 +86,42 @@ def bnp_defense(net, u, trainloader, args):
 			m.collect_stats_clean = True
 			m.collect_stats_bd = False
 	with torch.no_grad():
-		net(mixture_data)
+
+		##############################################
+		# Modified to use clean data loader
+  		##############################################
+		for data in clean_data_loader:
+			data = data[0].to(args.device)
+			net(data)
+		
 	for m in net.modules():
 		if isinstance(m, nn.LayerNorm):
 			m.collect_stats_bd = True
 			m.collect_stats_clean = False
-	with torch.no_grad():
-		net(bd_data)
-		for name, m in net.named_modules():
-			if isinstance(m, nn.BatchNorm2d):
-				var_2 = m.running_var
-				var_1 = m.batch_var
-				mean_2 = m.running_mean
-				mean_1 = m.batch_mean
-				kl_div = (var_2/var_1).log() + (var_1+(mean_1-mean_2).pow(2))/(2*var_2) - 1/2
-				index = (kl_div>kl_div.mean() + u*kl_div.std())
 
-				params[name+'.weight'][index] = 0
-				params[name+'.bias'][index] = 0
-			elif isinstance(m, nn.LayerNorm):
-				# We use layer norm to subsitute batch norm in convnext_model and vit_model
-				var_2 = m.batch_var_bd
-				var_1 = m.batch_var_clean
-				mean_2 = m.batch_mean_bd
-				mean_1 = m.batch_mean_clean
-				kl_div = (var_2/var_1).log() + (var_1+(mean_1-mean_2).pow(2))/(2*var_2) - 1/2
-				index = (kl_div>kl_div.mean() + u*kl_div.std())
+	for name, m in net.named_modules():
+		if isinstance(m, nn.BatchNorm2d):
+			var_2 = m.running_var
+			var_1 = m.batch_var
+			mean_2 = m.running_mean
+			mean_1 = m.batch_mean
+			kl_div = (var_2/var_1).log() + (var_1+(mean_1-mean_2).pow(2))/(2*var_2) - 1/2
+			index = (kl_div>kl_div.mean() + u*kl_div.std())
 
-				params[name+'.weight'][index] = 0
-				params[name+'.bias'][index] = 0
+			params[name+'.weight'][index] = 0
+			params[name+'.bias'][index] = 0
+
+		# elif isinstance(m, nn.LayerNorm):
+		# 	# We use layer norm to subsitute batch norm in convnext_model and vit_model
+		# 	var_2 = m.batch_var_bd
+		# 	var_1 = m.batch_var_clean
+		# 	mean_2 = m.batch_mean_bd
+		# 	mean_1 = m.batch_mean_clean
+		# 	kl_div = (var_2/var_1).log() + (var_1+(mean_1-mean_2).pow(2))/(2*var_2) - 1/2
+		# 	index = (kl_div>kl_div.mean() + u*kl_div.std())
+
+		# 	params[name+'.weight'][index] = 0
+		# 	params[name+'.bias'][index] = 0
 
 	net.load_state_dict(params)
 
@@ -195,8 +209,8 @@ class bnp(defense):
 		parser.add_argument("--dataset_path", type=str, help='the location of data')
 		parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
 		parser.add_argument('--result_file', type=str, help='the location of result')
+		parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
 	
-		parser.add_argument('--epochs', type=int)
 		parser.add_argument('--batch_size', type=int)
 		parser.add_argument("--num_workers", type=float)
 		parser.add_argument('--lr', type=float)
@@ -213,20 +227,35 @@ class bnp(defense):
 						help=' frequency_save, 0 is never')
 
 		parser.add_argument('--random_seed', type=int, help='random seed')
-		parser.add_argument('--yaml_path', type=str, default="./config/defense/bnp/config.yaml", help='the path of yaml')
+		parser.add_argument('--yaml_path', type=str, help='the path of yaml')
 
 		#set the parameter for the bnp defense
 		parser.add_argument('--u', type=float, help='u in the bnp defense')
 		parser.add_argument('--u_min', type=float, help='the default minimum value of u')
 		parser.add_argument('--u_max', type=float, help='the default maximum value of u')
 		parser.add_argument('--u_num', type=float, help='the default number of u')
-		parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
 		parser.add_argument('--index', type=str, help='index of clean data')
+
+		parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
+		parser.add_argument('--spc', type=int, help='the spc of clean data loader')
 
 
 	def set_result(self, result_file):
-		attack_file = 'record/' + result_file
-		save_path = 'record/' + result_file + '/defense/bnp/'
+     
+		if self.args.spc is None and self.args.ratio is None:
+			raise Exception("Either spc or ratio must be specified")
+		
+		# #######################################
+		# Modified to be compatible with the new result_base and SPC
+		# #######################################
+		if self.args.spc is not None:
+			save_path = self.args.result_base + os.path.sep + result_file + os.path.sep + "defense" + os.path.sep + "bnp" + os.path.sep + f'spc_{self.args.spc}' + os.path.sep + str(self.args.random_seed) + os.path.sep
+		else:
+			save_path = self.args.result_base + os.path.sep + result_file + os.path.sep + "defense" + os.path.sep + "bnp" + os.path.sep + f'ratio_{self.args.ratio}' + os.path.sep + str(self.args.random_seed) + os.path.sep
+		
+		
+		attack_file = self.args.result_base + os.path.sep + result_file
+		
 		if not (os.path.exists(save_path)):
 			os.makedirs(save_path)
 		# assert(os.path.exists(save_path))    
@@ -312,12 +341,30 @@ class bnp(defense):
 		trainloader_all['bd_train'] = trainloader_backdoor
 
 		train_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = True)
+		
+
+		# #######################################
+        # Modified to be compatible with SPC
+        # Note: Some methods require validation and therefore SPC cannot be 1
+        # #######################################
 		clean_dataset = prepro_cls_DatasetBD_v2(self.result['clean_train'].wrapped_dataset)
-		data_all_length = len(clean_dataset)
-		ran_idx = choose_index(self.args, data_all_length) 
+
+		if self.args.spc is not None:
+			use_spc = self.args.spc
+			if self.args.spc < 1: 
+				raise Exception("SPC must be greater than 1")
+			if use_spc == 1: use_spc = 2
+			train_idx, _ = spc_choose_poisoned_sample(clean_dataset, use_spc, val_ratio=0)
+		else:
+			data_all_length = len(clean_dataset)
+			train_idx = choose_index(self.args, data_all_length) 
+
 		log_index = self.args.log + 'index.txt'
-		np.savetxt(log_index, ran_idx, fmt='%d')
-		clean_dataset.subset(ran_idx)
+		np.savetxt(log_index, train_idx, fmt='%d')
+		clean_dataset.subset(train_idx)
+
+		print(f"Train: {len(clean_dataset)}")
+
 		data_set_without_tran = clean_dataset
 		data_set_o = self.result['clean_train']
 		data_set_o.wrapped_dataset = data_set_without_tran
@@ -337,97 +384,100 @@ class bnp(defense):
 		data_clean_testset.wrap_img_transform = test_tran
 		data_clean_loader = torch.utils.data.DataLoader(data_clean_testset, batch_size=self.args.batch_size, num_workers=self.args.num_workers,drop_last=False,pin_memory=args.pin_memory)
 
+		##############################################
+		# Removed to only test the clean case
+		##############################################
+  
+		# default_u = np.linspace(self.args.u_min, self.args.u_max, self.args.u_num)
 		
-		default_u = np.linspace(self.args.u_min, self.args.u_max, self.args.u_num)
-		
-		agg_all = Metric_Aggregator()
-		clean_test_loss_list = []
-		bd_test_loss_list = []
-		test_acc_list = []
-		test_asr_list = []
-		test_ra_list = []
-		for u in default_u:
-			model_copy = copy.deepcopy(net)
-			model_copy.eval()
-			bnp_defense(model_copy, self.args.u, trainloader_all, args)
-			# model.eval()
-			model_copy.eval()
-			test_dataloader_dict = {}
-			test_dataloader_dict["clean_test_dataloader"] = data_clean_loader
-			test_dataloader_dict["bd_test_dataloader"] = data_bd_loader
+		# agg_all = Metric_Aggregator()
+		# clean_test_loss_list = []
+		# bd_test_loss_list = []
+		# test_acc_list = []
+		# test_asr_list = []
+		# test_ra_list = []
+		# for u in default_u:
+		# 	model_copy = copy.deepcopy(net)
+		# 	model_copy.eval()
+		# 	bnp_defense(model_copy, self.args.u, trainloader_all, args)
+		# 	# model.eval()
+		# 	model_copy.eval()
+		# 	test_dataloader_dict = {}
+		# 	test_dataloader_dict["clean_test_dataloader"] = data_clean_loader
+		# 	test_dataloader_dict["bd_test_dataloader"] = data_bd_loader
 
-			self.set_trainer(model_copy)
-			self.trainer.set_with_dataloader(
-				### the train_dataload has nothing to do with the backdoor defense
-				train_dataloader = data_bd_loader,
-				test_dataloader_dict = test_dataloader_dict,
+		# 	self.set_trainer(model_copy)
+		# 	self.trainer.set_with_dataloader(
+		# 		### the train_dataload has nothing to do with the backdoor defense
+		# 		train_dataloader = data_bd_loader,
+		# 		test_dataloader_dict = test_dataloader_dict,
 
-				criterion = criterion,
-				optimizer = None,
-				scheduler = None,
-				device = self.args.device,
-				amp = self.args.amp,
+		# 		criterion = criterion,
+		# 		optimizer = None,
+		# 		scheduler = None,
+		# 		device = self.args.device,
+		# 		amp = self.args.amp,
 
-				frequency_save = self.args.frequency_save,
-				save_folder_path = self.args.save_path,
-				save_prefix = 'bnp',
+		# 		frequency_save = self.args.frequency_save,
+		# 		save_folder_path = self.args.save_path,
+		# 		save_prefix = 'bnp',
 
-				prefetch = self.args.prefetch,
-				prefetch_transform_attr_name = "ori_image_transform_in_loading",
-				non_blocking = self.args.non_blocking,
+		# 		prefetch = self.args.prefetch,
+		# 		prefetch_transform_attr_name = "ori_image_transform_in_loading",
+		# 		non_blocking = self.args.non_blocking,
 
 	
-				)
+		# 		)
 
-			clean_test_loss_avg_over_batch, \
-					bd_test_loss_avg_over_batch, \
-					test_acc, \
-					test_asr, \
-					test_ra = self.trainer.test_current_model(
-				test_dataloader_dict, self.args.device,
-			)
-			clean_test_loss_list.append(clean_test_loss_avg_over_batch)
-			bd_test_loss_list.append(bd_test_loss_avg_over_batch)
-			test_acc_list.append(test_acc)
-			test_asr_list.append(test_asr)
-			test_ra_list.append(test_ra)
-			agg_all({
-				"u": u,
-				"clean_test_loss_avg_over_batch": clean_test_loss_avg_over_batch,
-				"bd_test_loss_avg_over_batch": bd_test_loss_avg_over_batch,
-				"test_acc": test_acc,
-				"test_asr": test_asr,
-				"test_ra": test_ra,
-			})
+		# 	clean_test_loss_avg_over_batch, \
+		# 			bd_test_loss_avg_over_batch, \
+		# 			test_acc, \
+		# 			test_asr, \
+		# 			test_ra = self.trainer.test_current_model(
+		# 		test_dataloader_dict, self.args.device,
+		# 	)
+		# 	clean_test_loss_list.append(clean_test_loss_avg_over_batch)
+		# 	bd_test_loss_list.append(bd_test_loss_avg_over_batch)
+		# 	test_acc_list.append(test_acc)
+		# 	test_asr_list.append(test_asr)
+		# 	test_ra_list.append(test_ra)
+		# 	agg_all({
+		# 		"u": u,
+		# 		"clean_test_loss_avg_over_batch": clean_test_loss_avg_over_batch,
+		# 		"bd_test_loss_avg_over_batch": bd_test_loss_avg_over_batch,
+		# 		"test_acc": test_acc,
+		# 		"test_asr": test_asr,
+		# 		"test_ra": test_ra,
+		# 	})
 
-			general_plot_for_epoch(
-				{
-					"Test C-Acc": test_acc_list,
-					"Test ASR": test_asr_list,
-					"Test RA": test_ra_list,
-				},
-				save_path=f"{args.save_path}u_step_acc_like_metric_plots.png",
-				ylabel="percentage",
-			)
+		# 	general_plot_for_epoch(
+		# 		{
+		# 			"Test C-Acc": test_acc_list,
+		# 			"Test ASR": test_asr_list,
+		# 			"Test RA": test_ra_list,
+		# 		},
+		# 		save_path=f"{args.save_path}u_step_acc_like_metric_plots.png",
+		# 		ylabel="percentage",
+		# 	)
 
-			general_plot_for_epoch(
-				{
-					"Test Clean Loss": clean_test_loss_list,
-					"Test Backdoor Loss": bd_test_loss_list,
-				},
-				save_path=f"{args.save_path}u_step_loss_metric_plots.png",
-				ylabel="percentage",
-			)
+		# 	general_plot_for_epoch(
+		# 		{
+		# 			"Test Clean Loss": clean_test_loss_list,
+		# 			"Test Backdoor Loss": bd_test_loss_list,
+		# 		},
+		# 		save_path=f"{args.save_path}u_step_loss_metric_plots.png",
+		# 		ylabel="percentage",
+		# 	)
 
-			general_plot_for_epoch(
-				{
-					"u": default_u,
-				},
-				save_path=f"{args.save_path}u_step_plots.png",
-				ylabel="percentage",
-			)
+		# 	general_plot_for_epoch(
+		# 		{
+		# 			"u": default_u,
+		# 		},
+		# 		save_path=f"{args.save_path}u_step_plots.png",
+		# 		ylabel="percentage",
+		# 	)
 
-			agg_all.to_dataframe().to_csv(f"{args.save_path}u_step_df.csv")
+		# 	agg_all.to_dataframe().to_csv(f"{args.save_path}u_step_df.csv")
 
 		agg = Metric_Aggregator()
 		bnp_defense(net, self.args.u, trainloader_all, args)
@@ -477,6 +527,20 @@ class bnp(defense):
 			})
 		agg.to_dataframe().to_csv(f"{args.save_path}bnp_df_summary.csv")
 
+		# ------------------------------- Final Test -------------------------------
+		test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, criterion, self.args)
+		logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+		final_result = {
+        	"test_acc": test_acc,
+        	"test_asr": test_asr,
+        	"test_ra": test_ra,
+		}
+		
+		final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+		final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
+
 		result = {}
 		result['model'] = model
 		save_defense_result(
@@ -485,6 +549,7 @@ class bnp(defense):
 			model=model.cpu().state_dict(),
 			save_path=args.save_path,
 		)
+
 		return result
 
 	def defense(self,result_file):

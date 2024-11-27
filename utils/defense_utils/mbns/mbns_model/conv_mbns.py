@@ -10,8 +10,7 @@ from torchvision.ops.misc import ConvNormActivation
 from torchvision.ops.stochastic_depth import StochasticDepth
 from torchvision.utils import _log_api_usage_once
 
-from defense.mbns import mbns_model
-
+from utils.defense_utils.mbns import mbns_model
 
 __all__ = [
     "ConvNeXt",

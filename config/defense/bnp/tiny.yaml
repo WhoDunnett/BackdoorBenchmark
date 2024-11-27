@@ -3,19 +3,18 @@ amp: True
 pin_memory: True
 non_blocking: True
 prefetch: False
+num_workers: 4
 
 checkpoint_load:
 checkpoint_save:
 log:
-dataset_path: './data'
+dataset_path: '../data'
 dataset: 'tiny'
 
-epochs: 100
 batch_size: 256
-num_workers: 4
+
 lr: 0.01
 lr_scheduler: CosineAnnealingLR
-model: 'preactresnet18'
 
 client_optimizer: 'sgd'
 sgd_momentum: 0.9 
@@ -28,5 +27,4 @@ u: 4
 u_min: 0 
 u_max: 10
 u_num: 21
-ratio: 0.05
 index: 

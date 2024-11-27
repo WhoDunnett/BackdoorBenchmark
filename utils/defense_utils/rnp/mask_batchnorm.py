@@ -1,13 +1,9 @@
-# This code is based on:
-# https://github.com/csdongxian/ANP_backdoor/blob/main/models/anp_batchnorm.py
-
 import torch
-from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.init as init
 from torch.nn.parameter import Parameter
-
+from torch import Tensor
+import torch.nn.init as init
 
 class MaskBatchNorm2d(nn.BatchNorm2d):
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
@@ -66,5 +62,3 @@ class MaskBatchNorm2d(nn.BatchNorm2d):
             self.running_var if not self.training or self.track_running_stats else None,
             self.weight * coeff_weight, self.bias * coeff_bias,
             bn_training, exponential_average_factor, self.eps)
-
-

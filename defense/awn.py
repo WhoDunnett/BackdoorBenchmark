@@ -33,7 +33,140 @@ from utils.save_load_attack import load_attack_result, save_defense_result
 from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform, spc_choose_poisoned_sample
 from tqdm import tqdm
 
-class FST(defense):
+from utils.defense_utils.rnp.preact import PreActResNet18
+from utils.defense_utils.rnp.vgg import vgg19_bn
+from utils.defense_utils.rnp.mobilenet import mobilenet_v3_large
+from utils.defense_utils.rnp.efficientnet import efficientnet_b3
+
+from utils.defense_utils.rnp.mask_batchnorm import MaskBatchNorm2d
+
+from collections import OrderedDict
+import torch.nn.functional as F
+
+def load_state_dict(net, orig_state_dict):
+    if 'state_dict' in orig_state_dict.keys():
+        orig_state_dict = orig_state_dict['state_dict']
+
+    new_state_dict = OrderedDict()
+    for k, v in net.state_dict().items():
+        if k in orig_state_dict.keys():
+            new_state_dict[k] = orig_state_dict[k]
+        else:
+            new_state_dict[k] = v
+    net.load_state_dict(new_state_dict)
+
+def save_mask_scores(state_dict, file_name):
+    mask_values = []
+    count = 0
+    for name, param in state_dict.items():
+        if 'neuron_mask' in name:
+            for idx in range(param.size(0)):
+                neuron_name = '.'.join(name.split('.')[:-1])
+                mask_values.append('{} \t {} \t {} \t {:.4f} \n'.format(count, neuron_name, idx, param[idx].item()))
+                count += 1
+    with open(file_name, "w") as f:
+        f.write('No \t Layer Name \t Neuron Idx \t Mask Score \n')
+        f.writelines(mask_values)
+
+def get_awn_network(
+    model_name: str,
+    num_classes: int = 10,
+    norm_layer = nn.BatchNorm2d,
+    **kwargs,
+):
+    
+    if model_name == 'preactresnet18':
+        net = PreActResNet18(num_classes = num_classes, norm_layer = norm_layer, **kwargs)
+    elif model_name == 'vgg19_bn':
+        net = vgg19_bn(num_classes = num_classes, norm_layer = norm_layer,  **kwargs)
+    elif model_name == 'mobilenet_v3_large':
+        net = mobilenet_v3_large(num_classes= num_classes, norm_layer = norm_layer, **kwargs)
+    elif model_name == 'efficientnet_b3':
+        net = efficientnet_b3(num_classes= num_classes, norm_layer = norm_layer, **kwargs)
+    else:
+        raise SystemError('NO valid model match in function generate_cls_model!')
+
+    return net
+
+def clip_mask(model, lower=0.0, upper=1.0):
+    params = [param for name, param in model.named_parameters() if 'mask' in name]
+    with torch.no_grad():
+        for param in params:
+            param.clamp_(lower, upper)
+
+def Regularization(model):
+    L1=0
+    L2=0
+    for name, param in model.named_parameters():
+        if 'mask' in name:
+            L1 += torch.sum(torch.abs(param))
+            L2 += torch.norm(param, 2)
+    return L1, L2
+
+def mask_train(model, criterion, mask_opt, data_loader, args):
+    model.eval()
+    total_correct = 0
+    total_loss = 0.0
+    nb_samples = 0
+
+    # Get image shape
+    width, height, channel = args.input_width, args.input_height, args.input_channel
+    batch_pert = torch.zeros([1, channel, width, height], requires_grad=True, device=args.device)
+
+    batch_opt = torch.optim.SGD(params=[batch_pert], lr=10)
+
+    for i, batch in enumerate(data_loader):
+        images, labels = batch[0].to(args.device), batch[1].to(args.device)
+
+        # step 1: calculate the adversarial perturbation for images
+        ori_lab = torch.argmax(model.forward(images),axis = 1).long()
+        per_logits = model.forward(images + batch_pert)
+        loss = F.cross_entropy(per_logits, ori_lab, reduction='mean')
+        loss_regu = torch.mean(-loss)
+
+        batch_opt.zero_grad()
+        loss_regu.backward(retain_graph = True)
+        batch_opt.step()
+
+    pert = batch_pert * min(1, args.trigger_norm / torch.sum(torch.abs(batch_pert)))
+    pert = pert.detach()
+
+    for i, batch in enumerate(data_loader):
+        images, labels = batch[0].to(args.device), batch[1].to(args.device)
+        nb_samples += images.size(0)
+        
+        perturbed_images = torch.clamp(images + pert[0], min=0, max=1)
+        
+        # step 2: calculate noisy loss and clean loss
+        mask_opt.zero_grad()
+        
+        output_noise = model(perturbed_images)
+        
+        output_clean = model(images)
+        pred = torch.argmax(output_clean, axis = 1).long()
+
+        loss_rob = criterion(output_noise, labels)
+        loss_nat = criterion(output_clean, labels)
+        L1, L2 = Regularization(model)
+
+        logging.debug(f"loss_noise | {loss_rob.item()} | loss_clean | {loss_nat.item()} | L1 | {L1.item()}")
+        
+        loss = args.alpha * loss_nat + (1 - args.alpha) * loss_rob + args.hyper_gamma * L1
+
+        pred = output_clean.data.max(1)[1]
+        total_correct += pred.eq(labels.view_as(pred)).sum()
+        total_loss += loss.item()
+        loss.backward()
+
+        mask_opt.step()
+        clip_mask(model)
+
+    loss = total_loss / len(data_loader)
+    acc = float(total_correct) / nb_samples
+    return loss, acc
+
+
+class AWN(defense):
 
     def __init__(self):
         pass
@@ -73,11 +206,13 @@ class FST(defense):
         parser.add_argument('--spc', type=int, help='the samples per class used for training')
         parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
         
-        # FST Arguments
-        parser.add_argument('--training_epochs', type=int, help='number of training epochs', default=15)
-        parser.add_argument('--momentum', type=float, help='momentum', default=0.9)
-        parser.add_argument('--lr', type=float, help='learning rate', default=0.01)
-        parser.add_argument('--alpha', type=float, help='alpha', default=0.2)
+        # AWN Arguments
+        parser.add_argument('--lr', type=float, default=1e-2, help='learning rate')
+        parser.add_argument('--hyper_gamma', type=float, default=1e-7, help='loss term weight')
+        parser.add_argument('--gamma', type=float, default=0.9, help='lr scheduler gamma')
+        parser.add_argument('--epochs', type=int, default=20, help='training epochs')
+        parser.add_argument('--trigger-norm', type=float, default=1000)
+        parser.add_argument('--alpha', type=float, default=0.9)
         
         return parser
 
@@ -101,9 +236,9 @@ class FST(defense):
         # Modified to be compatible with the new result_base and SPC
         # #######################################
         if args.spc is not None:
-            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
+            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "awn" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
         else:
-            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
+            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "awn" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
         
         os.makedirs(defense_save_path, exist_ok = True)
         args.defense_save_path = defense_save_path
@@ -158,17 +293,24 @@ class FST(defense):
                     }
                 '''
         self.attack_result = load_attack_result(args.result_base + os.path.sep + self.args.result_file + os.path.sep +'attack_result.pt')
-
-        model = generate_cls_model(args.model, args.num_classes)
-        model.load_state_dict(self.attack_result['model'])
-        model.to(args.device)
+        
+    def load_model_replica(self, weights=None, mask_bn=False):
+        
+        if mask_bn:
+            model = get_awn_network(self.args.model, self.args.num_classes, norm_layer = MaskBatchNorm2d)
+        else:
+            model = get_awn_network(self.args.model, self.args.num_classes)
+            
+        if weights is not None:
+            load_state_dict(model, weights)
+            
+        model.to(self.args.device)
         model.eval()
-
-        self.model = model
+        model.requires_grad_(False)
+        
+        return model
 
     def defense(self):
-
-        model = self.model
 
         args = self.args
         attack_result = self.attack_result
@@ -209,84 +351,31 @@ class FST(defense):
         bd_test_dataset_with_transform = attack_result['bd_test']
         data_bd_testset = bd_test_dataset_with_transform
 
-        # ------------------------------- Training Loop -------------------------------
-        # https://github.com/AISafety-HKUST/Backdoor_Safety_Tuning/blob/main/fine_tune/ft.py
-        training_acc, training_asr, trianing_ra = [], [], []
+        # ------------------------------- Training Loop -------------------------------     
+        # https://github.com/jinghuichen/AWM
         
-        # Save a reference so that the weights can be accessed later
-        original_weights = None
-        new_layer = None
+        model = self.load_model_replica(weights=self.attack_result['model'], mask_bn=True)       
+        mask_params = [param for name, param in model.named_parameters() if 'neuron_mask' in name]
         
-        # Ensure each parameter requires a gradient
-        for name, param in model.named_parameters():
-            param.requires_grad = True   
-        
-        if args.model == 'preactresnet18':
-            original_weights = [model.linear.weight.data.clone()]
-            model.linear = nn.Linear(model.linear.in_features, args.num_classes).to(args.device)
-            new_layer = [model.linear]
-        elif args.model == 'vgg19_bn':
-            original_weights = [model.classifier[0].weight.data.clone(), model.classifier[3].weight.data.clone(), model.classifier[6].weight.data.clone()]
-            model.classifier[0] = nn.Linear(model.classifier[0].in_features, model.classifier[0].out_features).to(args.device)
-            model.classifier[3] = nn.Linear(model.classifier[3].in_features, model.classifier[3].out_features).to(args.device)
-            model.classifier[6] = nn.Linear(model.classifier[6].in_features, args.num_classes).to(args.device)
-            new_layer = [model.classifier[0], model.classifier[3], model.classifier[6]]
-        elif args.model == "mobilenet_v3_large":
-            original_weights = [model.classifier[0].weight.data.clone(), model.classifier[3].weight.data.clone()]
-            model.classifier[0] = nn.Linear(model.classifier[0].in_features, model.classifier[0].out_features).to(args.device)
-            model.classifier[3] = nn.Linear(model.classifier[3].in_features, args.num_classes).to(args.device)
-            new_layer = [model.classifier[0], model.classifier[3]]
-        elif args.model == "efficientnet_b3":
-            original_weights = [model.classifier[1].weight.data.clone()]
-            model.classifier[1] = nn.Linear(model.classifier[1].in_features, args.num_classes).to(args.device)
-            new_layer = [model.classifier[1]]
-        else:
-            raise Exception("Model not supported")
-        
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.training_epochs)
-        critierion = nn.CrossEntropyLoss()
-        
-        acc, asr, ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), args)
-        logging.info(f'Initial acc:{acc}  asr:{asr}  ra:{ra}')
-        
-        for epoch in range(args.training_epochs):
+        for param in mask_params:
+            param.requires_grad = True
             
-            epoch_loss = 0
-            
-            model.train()
-            for batch in tqdm(train_loader):
-                inputs, labels = batch[0].to(args.device), batch[1].to(args.device)
-                
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                
-                # Loss 1 is the inner product of the original weights and the new weights
-                inner_product = torch.tensor(0.0).to(args.device)
-                for i in range(len(original_weights)):
-                    inner_product += torch.sum(original_weights[i] * new_layer[i].weight.data)
-                
-                # Loss 2 is the cross entropy loss
-                ce_loss = critierion(outputs, labels)
-                
-                # Total loss and backpropagation
-                loss = ce_loss + (args.alpha * inner_product)
-                loss.backward()
-                
-                optimizer.step()
-                
-                batch_loss = loss.item()
-                epoch_loss += batch_loss
-                
-                # Normalize the weights
-                for i in range(len(original_weights)):
-                   new_layer[i].weight.data = (new_layer[i].weight.data / torch.norm(new_layer[i].weight.data, p=2)) * torch.norm(original_weights[i], p=2)
-                
-            scheduler.step()
+        mask_opt = torch.optim.SGD(mask_params, lr=args.lr)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(mask_opt, gamma=args.gamma)
+        criterion = nn.CrossEntropyLoss()
+        
+        training_acc, training_asr, training_ra = [], [], []
+        for i in range(args.epochs):
+            train_loss, train_acc = mask_train(model, criterion, mask_opt, train_loader, args)
             
             acc, asr, ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), args)
-            logging.info(f'Epoch {epoch}  loss:{epoch_loss}  acc:{acc}  asr:{asr}  ra:{ra}')
-            training_acc.append(acc), training_asr.append(asr), trianing_ra.append(ra)
+            logging.info(f'Epoch {i} | train_loss: {train_loss} | train_acc: {train_acc} | test_acc: {acc} | test_asr: {asr} | test_ra: {ra}')
+            training_acc.append(train_acc), training_asr.append(asr), training_ra.append(ra)
+
+            scheduler.step()
+            
+        # Save the mask scores
+        save_mask_scores(model.state_dict(), os.path.join(args.defense_save_path, 'mask_scores.txt'))
         
         # ------------------------------- Final Test -------------------------------
         test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), self.args)
@@ -296,7 +385,7 @@ class FST(defense):
         training_result = {
             "training_acc": training_acc,
             "training_asr": training_asr,
-            "training_ra": trianing_ra,
+            "training_ra": training_ra,
         }
         
         training_result_df = pd.DataFrame(training_result, columns=["training_acc", "training_asr", "training_ra"])
@@ -321,11 +410,11 @@ class FST(defense):
 
 if __name__ == '__main__':
     torch.autograd.set_detect_anomaly(True)
-    fst = FST()
+    awn = AWN()
     parser = argparse.ArgumentParser(description=sys.argv[0])
-    parser = fst.set_args(parser)
+    parser = awn.set_args(parser)
     args = parser.parse_args()
-    fst.add_yaml_to_args(args)
-    args = fst.process_args(args)
-    fst.prepare(args)
-    fst.defense()
+    awn.add_yaml_to_args(args)
+    args = awn.process_args(args)
+    awn.prepare(args)
+    awn.defense()

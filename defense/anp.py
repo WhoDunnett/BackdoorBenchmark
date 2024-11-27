@@ -38,6 +38,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+os.chdir(sys.path[0])
 sys.path.append('../')
 sys.path.append(os.getcwd())
 
@@ -55,15 +56,14 @@ import copy
 import utils.defense_utils.anp.anp_model as anp_model
 
 from utils.aggregate_block.train_settings_generate import argparser_criterion, argparser_opt_scheduler
-from utils.trainer_cls import BackdoorModelTrainer, Metric_Aggregator, ModelTrainerCLS, ModelTrainerCLS_v2, PureCleanModelTrainer, general_plot_for_epoch
-from utils.bd_dataset import prepro_cls_DatasetBD
+from utils.trainer_cls import BackdoorModelTrainer, Metric_Aggregator, ModelTrainerCLS, ModelTrainerCLS_v2, PureCleanModelTrainer, general_plot_for_epoch, given_dataloader_test_v2
 from utils.choose_index import choose_index
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model, partially_load_state_dict
 from utils.log_assist import get_git_info
 from utils.aggregate_block.dataset_and_transform_generate import get_input_shape, get_num_classes, get_transform
 from utils.save_load_attack import load_attack_result, save_defense_result
-from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2
+from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, spc_choose_poisoned_sample, dataset_wrapper_with_transform
 
 
 
@@ -282,60 +282,6 @@ def pruning(net, neuron):
 
 
 class anp(defense):
-    r"""Adversarial Neuron Pruning Purifies Backdoored Deep Models
-    
-    basic structure: 
-    
-    1. config args, save_path, fix random seed
-    2. load the backdoor attack data and backdoor test data
-    3. load the backdoor attack model
-    4. anp defense:
-        a. train the mask of old model
-        b. prune the model depend on the mask
-    5. test the result and get ASR, ACC, RC 
-       
-    .. code-block:: python
-    
-        parser = argparse.ArgumentParser(description=sys.argv[0])
-        anp.add_arguments(parser)
-        args = parser.parse_args()
-        anp_method = anp(args)
-        if "result_file" not in args.__dict__:
-            args.result_file = 'one_epochs_debug_badnet_attack'
-        elif args.result_file is None:
-            args.result_file = 'one_epochs_debug_badnet_attack'
-        result = anp_method.defense(args.result_file)
-    
-    .. Note::
-        @article{wu2021adversarial,
-        title={Adversarial neuron pruning purifies backdoored deep models},
-        author={Wu, Dongxian and Wang, Yisen},
-        journal={Advances in Neural Information Processing Systems},
-        volume={34},
-        pages={16913--16925},
-        year={2021}
-        }
-
-    Args:
-        baisc args: in the base class
-        anp_eps (float): the epsilon for the anp defense in the first step to train the mask
-        anp_steps (int): the training steps for the anp defense in the first step to train the mask
-        anp_alpha (float): the alpha for the anp defense in the first step to train the mask for the loss
-        pruning_by (str): the method for pruning, number or threshold
-        pruning_max (float): the maximum number/threshold for pruning
-        pruning_step (float): the step size for evaluating the pruning
-        pruning_number (float): the default number/threshold for pruning
-        index (str): the index of the clean data
-        acc_ratio (float): the tolerance ration of the clean accuracy
-        ratio (float): the ratio of clean data loader
-        print_every (int): print results every few iterations
-        nb_iter (int): the number of iterations for training
-
-    Update:
-        All threshold evaluation results will be saved in the save_path folder as a picture, and the selected fixed threshold model results will be saved to defense_result.pt
-
-        
-    """ 
 
     def __init__(self,args):
         with open(args.yaml_path, 'r') as f:
@@ -344,13 +290,10 @@ class anp(defense):
         defaults.update({k:v for k,v in args.__dict__.items() if v is not None})
 
         args.__dict__ = defaults
-
         args.terminal_info = sys.argv
-
         args.num_classes = get_num_classes(args.dataset)
         args.input_height, args.input_width, args.input_channel = get_input_shape(args.dataset)
         args.img_size = (args.input_height, args.input_width, args.input_channel)
-        args.dataset_path = f"{args.dataset_path}/{args.dataset}"
 
         self.args = args
 
@@ -371,6 +314,7 @@ class anp(defense):
         parser.add_argument("--dataset_path", type=str, help='the location of data')
         parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
         parser.add_argument('--result_file', type=str, help='the location of result')
+        parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
     
         parser.add_argument('--epochs', type=int)
         parser.add_argument('--batch_size', type=int)
@@ -389,10 +333,12 @@ class anp(defense):
                         help=' frequency_save, 0 is never')
 
         parser.add_argument('--random_seed', type=int, help='random seed')
-        parser.add_argument('--yaml_path', type=str, default="./config/defense/anp/config.yaml", help='the path of yaml')
+        parser.add_argument('--yaml_path', type=str, help='the path of yaml')
 
         #set the parameter for the anp defense
         parser.add_argument('--acc_ratio', type=float, help='the tolerance ration of the clean accuracy')
+        parser.add_argument('--spc', type=int, help='the samples per class used for training')
+        parser.add_argument('--val_ratio', type=float, help='the ratio of validation data loader')
         parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
         parser.add_argument('--print_every', type=int, help='print results every few iterations')
         parser.add_argument('--nb_iter', type=int, help='the number of iterations for training')
@@ -406,14 +352,26 @@ class anp(defense):
         parser.add_argument('--pruning_step', type=float, help='the step size for evaluating the pruning')
 
         parser.add_argument('--pruning_number', type=float, help='the default number/threshold for pruning')
-
         parser.add_argument('--index', type=str, help='index of clean data')
 
 
 
     def set_result(self, result_file):
-        attack_file = 'record/' + result_file
-        save_path = 'record/' + result_file + '/defense/anp/'
+        
+        if self.args.spc is None and self.args.ratio is None:
+            raise Exception("Either spc or ratio must be specified")
+        
+        # #######################################
+        # Modified to be compatible with the new result_base and SPC
+        # #######################################
+        if self.args.spc is not None:
+            save_path = self.args.result_base + os.path.sep + result_file + os.path.sep + "defense" + os.path.sep + "anp" + os.path.sep + f'spc_{self.args.spc}' + os.path.sep + str(self.args.random_seed) + os.path.sep
+        else:
+            save_path = self.args.result_base + os.path.sep + result_file + os.path.sep + "defense" + os.path.sep + "anp" + os.path.sep + f'ratio_{self.args.ratio}' + os.path.sep + str(self.args.random_seed) + os.path.sep
+        
+        
+        attack_file = args.result_base + os.path.sep + result_file
+
         if not (os.path.exists(save_path)):
             os.makedirs(save_path)
         # assert(os.path.exists(save_path))    
@@ -427,7 +385,7 @@ class anp(defense):
             if not (os.path.exists(self.args.log)):
                 os.makedirs(self.args.log)  
         self.result = load_attack_result(attack_file + '/attack_result.pt')
-        
+
     def set_trainer(self, model):
         self.trainer = PureCleanModelTrainer(
             model,
@@ -465,7 +423,8 @@ class anp(defense):
             ) if torch.cuda.is_available() else "cpu"
         )
     
-    def evaluate_by_number(self, args, model, mask_values, pruning_max, pruning_step, criterion,test_dataloader_dict, best_asr, acc_ori, save = True):
+    # NOTE: The following function was modified to use validation dataloader
+    def evaluate_by_number(self, args, model, mask_values, pruning_max, pruning_step, criterion,test_dataloader_dict, acc_ori, validation_dataloader, save = True):
         results = []
         nb_max = int(np.ceil(pruning_max))
         nb_step = int(np.ceil(pruning_step))
@@ -571,17 +530,23 @@ class anp(defense):
                 )
 
                 agg.to_dataframe().to_csv(f"{args.save_path}number_df.csv")
-            if abs(test_acc - acc_ori)/acc_ori < args.acc_ratio:
-                if test_asr < best_asr:
-                    model_best = copy.deepcopy(model)
-                    best_asr = test_asr
+
+            # #######################################
+            # Modified use validation accuracy rather than clean accuracy
+            # #######################################
+            validation_metric = self.test_validation(criterion, model, validation_dataloader)
+            val_acc = validation_metric['test_correct'] / validation_metric['test_total']
+            if abs(val_acc - acc_ori)/acc_ori < args.acc_ratio:
+                model_best = copy.deepcopy(model)
+                
         return results, model_best
 
 
-    def evaluate_by_threshold(self, args, model, mask_values, pruning_max, pruning_step, criterion, test_dataloader_dict, best_asr, acc_ori, save = True):
+    def evaluate_by_threshold(self, args, model, mask_values, pruning_max, pruning_step, criterion, test_dataloader_dict, acc_ori, validation_dataloader, save = True):
         results = []
         thresholds = np.arange(0, pruning_max + pruning_step, pruning_step)
         start = 0
+
         model_best = copy.deepcopy(model)
 
         clean_test_loss_list = []
@@ -681,11 +646,40 @@ class anp(defense):
 
                 agg.to_dataframe().to_csv(f"{args.save_path}threshold_df.csv")
             
-            if abs(test_acc - acc_ori)/acc_ori < args.acc_ratio:
-                if test_asr < best_asr:
-                    model_best = copy.deepcopy(model)
-                    best_asr = test_asr
+            # #######################################
+            # Modified use validation accuracy rather than clean accuracy
+            # #######################################
+            validation_metric = self.test_validation(criterion, model, validation_dataloader)
+            val_acc = validation_metric['test_correct'] / validation_metric['test_total']
+            if abs(val_acc - acc_ori)/acc_ori < args.acc_ratio:
+                model_best = copy.deepcopy(model)
+
         return results, model_best
+
+    def test_validation(self, criterion, current_model, validation_loader):
+        current_model.eval()
+        metrics = {
+            'test_correct': 0,
+            'test_loss': 0,
+            'test_total': 0,
+        }
+
+        with torch.no_grad():
+            for batch_idx, (x, target, *additional_info) in enumerate(validation_loader):
+                x = x.to(self.args.device)
+                target = target.to(self.args.device)
+
+                pred = current_model(x)
+                loss = criterion(pred, target)
+
+                _, predicted = torch.max(pred, -1)
+                correct = predicted.eq(target).sum()
+
+                metrics['test_correct'] += correct.item()
+                metrics['test_loss'] += loss.item() * target.size(0)
+                metrics['test_total'] += target.size(0)
+
+        return metrics
 
     def mitigation(self):
         self.set_devices()
@@ -693,28 +687,55 @@ class anp(defense):
 
         args = self.args
         result = self.result
-        # a. train the mask of old model
+        
         train_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = True)
-        clean_dataset = prepro_cls_DatasetBD_v2(self.result['clean_train'].wrapped_dataset)
-        data_all_length = len(clean_dataset)
-        ran_idx = choose_index(self.args, data_all_length) 
-        log_index = self.args.log + 'index.txt'
-        np.savetxt(log_index, ran_idx, fmt='%d')
-        clean_dataset.subset(ran_idx)
-        data_set_without_tran = clean_dataset
-        data_set_clean = self.result['clean_train']
-        data_set_clean.wrapped_dataset = data_set_without_tran
+
+        # #######################################
+        # Modified to be compatible with SPC and validation data
+        # Note: Some methods require validation and therefore SPC cannot be 1
+        # #######################################
+        
+        clean_train_dataset = result['clean_train']
+        clean_train_wrapper, clean_val_wrapper = clean_train_dataset.wrapped_dataset, clean_train_dataset.wrapped_dataset
+        clean_train_wrapper, clean_val_wrapper = prepro_cls_DatasetBD_v2(clean_train_wrapper), prepro_cls_DatasetBD_v2(clean_val_wrapper)
+        
+        if args.spc is not None:
+            spc_use = args.spc
+            if args.spc < 1: 
+                raise Exception("SPC must be greater than 1")
+            train_idx, val_idx = spc_choose_poisoned_sample(clean_train_wrapper, spc_use, val_ratio=args.val_ratio)
+        else:
+            ran_idx = choose_index(args, len(clean_train_wrapper))
+            train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
+            val_idx = np.setdiff1d(np.arange(len(ran_idx)), train_idx)
+
+        clean_train_wrapper.subset(train_idx), clean_val_wrapper.subset(val_idx)
+
+        data_set_clean = dataset_wrapper_with_transform(clean_train_wrapper, train_tran)
+        data_set_clean.wrapped_dataset = clean_train_wrapper
         data_set_clean.wrap_img_transform = train_tran
+
+        data_set_val = dataset_wrapper_with_transform(clean_val_wrapper, train_tran)
+        data_set_val.wrapper_dataset = clean_val_wrapper
+        data_set_val.wrap_img_transform = train_tran
+
+        print(f"Train: {len(data_set_clean)}")
+        print(f"Val: {len(data_set_val)}")
+
+        # END MODIFICATIONS
+        ##############################################
+
         # data_set_clean.wrapped_dataset.getitem_all = False
         random_sampler = RandomSampler(data_source=data_set_clean, replacement=True,
                                     num_samples=args.print_every * args.batch_size)
-        clean_val_loader = DataLoader(data_set_clean, batch_size=args.batch_size,
-                                    shuffle=False, sampler=random_sampler, num_workers=0)
+        clean_loader = DataLoader(data_set_clean, batch_size=args.batch_size,
+                                    shuffle=False, sampler=random_sampler, num_workers=args.num_workers)
         
+        val_loader = DataLoader(data_set_val, batch_size=args.batch_size, num_workers=args.num_workers,drop_last=False, shuffle=True,pin_memory=True)
+
         test_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = False)
         data_bd_testset = self.result['bd_test']
         data_bd_testset.wrap_img_transform = test_tran
-        # data_bd_testset.wrapped_dataset.getitem_all = False
         poison_test_loader = DataLoader(data_bd_testset, batch_size=args.batch_size, num_workers=args.num_workers,drop_last=False, shuffle=True,pin_memory=True)
 
         test_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = False)
@@ -726,6 +747,7 @@ class anp(defense):
         test_dataloader_dict["clean_test_dataloader"] = clean_test_loader
         test_dataloader_dict["bd_test_dataloader"] = poison_test_loader
         state_dict = self.result['model']
+
         net = get_anp_network(args.model, num_classes=args.num_classes, norm_layer=anp_model.NoisyBatchNorm2d)
         load_state_dict(net, orig_state_dict=state_dict)
         net = net.to(args.device)
@@ -742,7 +764,7 @@ class anp(defense):
         for i in range(nb_repeat):
             start = time.time()
             lr = mask_optimizer.param_groups[0]['lr']
-            train_loss, train_acc = mask_train(args, model=net, criterion=criterion, data_loader=clean_val_loader,
+            train_loss, train_acc = mask_train(args, model=net, criterion=criterion, data_loader=clean_loader,
                                             mask_opt=mask_optimizer, noise_opt=noise_optimizer)
             cl_test_loss, cl_test_acc = test(args, model=net, criterion=criterion, data_loader=clean_test_loader)
             po_test_loss, po_test_acc = test(args, model=net, criterion=criterion, data_loader=poison_test_loader)
@@ -759,22 +781,31 @@ class anp(defense):
 
         mask_values = read_data(args.checkpoint_save + 'mask_values.txt')
         mask_values = sorted(mask_values, key=lambda x: float(x[2]))
+
+        #########################################
+        # Modified to use validation accuracy
+        #########################################
+        
         logging.info('No. \t Layer Name \t Neuron Idx \t Mask \t PoisonLoss \t PoisonACC \t CleanLoss \t CleanACC')
         cl_loss, cl_acc = test(args, model=net_prune, criterion=criterion, data_loader=clean_test_loader)
         po_loss, po_acc = test(args, model=net_prune, criterion=criterion, data_loader=poison_test_loader)
         logging.info('0 \t None     \t None     \t {:.4f} \t {:.4f} \t {:.4f} \t {:.4f}'.format(po_loss, po_acc, cl_loss, cl_acc))
 
+        validation_metric = self.test_validation(criterion, net_prune, val_loader)
+        val_acc_init = validation_metric['test_correct'] / validation_metric['test_total']
+
         model = copy.deepcopy(net_prune)
         if args.pruning_by == 'threshold':
             results, model_pru = self.evaluate_by_threshold(
                 args, net_prune, mask_values, pruning_max=args.pruning_max, pruning_step=args.pruning_step,
-                criterion=criterion, test_dataloader_dict=test_dataloader_dict, best_asr=po_acc, acc_ori=cl_acc
+                criterion=criterion, test_dataloader_dict=test_dataloader_dict, acc_ori=cl_acc, validation_dataloader=val_loader
             )
         else:
             results, model_pru = self.evaluate_by_number(
                 args, net_prune, mask_values, pruning_max=args.pruning_max, pruning_step=args.pruning_step,
-                criterion=criterion, test_dataloader_dict=test_dataloader_dict, best_asr=po_acc, acc_ori=cl_acc
+                criterion=criterion, test_dataloader_dict=test_dataloader_dict, acc_ori=cl_acc, validation_dataloader=val_loader
             )
+
         file_name = os.path.join(args.checkpoint_save, 'pruning_by_{}.txt'.format(args.pruning_by))
         with open(file_name, "w") as f:
             f.write('No \t Layer Name \t Neuron Idx \t Mask \t PoisonLoss \t PoisonACC \t CleanLoss \t CleanACC\n')
@@ -784,17 +815,17 @@ class anp(defense):
             if args.pruning_by == 'threshold':
                 _, _ = self.evaluate_by_threshold(
                     args, model, mask_values, pruning_max=args.pruning_number, pruning_step=args.pruning_number,
-                    criterion=criterion, test_dataloader_dict=test_dataloader_dict, best_asr=po_acc, acc_ori=cl_acc, save=False
+                    criterion=criterion, test_dataloader_dict=test_dataloader_dict, acc_ori=val_acc_init, validation_dataloader=val_loader, save=False
                 )
             else:
                 _, _ = self.evaluate_by_number(
                     args, model, mask_values, pruning_max=args.pruning_number, pruning_step=args.pruning_number,
-                    criterion=criterion, test_dataloader_dict=test_dataloader_dict, best_asr=po_acc, acc_ori=cl_acc, save=False
+                    criterion=criterion, test_dataloader_dict=test_dataloader_dict, acc_ori=val_acc_init, validation_dataloader=val_loader, save=False
                 )
             self.set_trainer(model)
             self.trainer.set_with_dataloader(
                 ### the train_dataload has nothing to do with the backdoor defense
-                train_dataloader = clean_val_loader,
+                train_dataloader = clean_loader,
                 test_dataloader_dict = test_dataloader_dict,
 
                 criterion = criterion,
@@ -829,6 +860,21 @@ class anp(defense):
                     "test_ra": test_ra,
                 })
             agg.to_dataframe().to_csv(f"{args.save_path}anp_df_summary.csv")
+            
+            # ------------------------------- Final Test -------------------------------
+            test_acc, test_asr, test_ra = given_dataloader_test_v2(model_pru, data_clean_testset, data_bd_testset, criterion, args)
+            logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+            # save the result to a csv file in the defense_save_path
+            final_result = {
+                "test_acc": test_acc,
+                "test_asr": test_asr,
+                "test_ra": test_ra,
+            }
+
+            final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+            final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
+
             result = {}
             result['model'] = model
             save_defense_result(
@@ -843,7 +889,7 @@ class anp(defense):
         self.set_trainer(model_pru)
         self.trainer.set_with_dataloader(
             ### the train_dataload has nothing to do with the backdoor defense
-            train_dataloader = clean_val_loader,
+            train_dataloader = clean_loader,
             test_dataloader_dict = test_dataloader_dict,
 
             criterion = criterion,
@@ -878,6 +924,21 @@ class anp(defense):
                 "test_ra": test_ra,
             })
         agg.to_dataframe().to_csv(f"{args.save_path}anp_df_summary.csv")
+        
+        # ------------------------------- Final Test -------------------------------
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(model_pru, data_clean_testset, data_bd_testset, criterion, args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
+
         result = {}
         result['model'] = model_pru
         save_defense_result(
@@ -886,6 +947,7 @@ class anp(defense):
             model=model_pru.cpu().state_dict(),
             save_path=args.save_path,
         )
+
         return result
 
     def defense(self,result_file):
@@ -899,6 +961,7 @@ if __name__ == '__main__':
     anp.add_arguments(parser)
     args = parser.parse_args()
     anp_method = anp(args)
+
     if "result_file" not in args.__dict__:
         args.result_file = 'defense_test_badnet'
     elif args.result_file is None:

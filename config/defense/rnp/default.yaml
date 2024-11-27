@@ -1,0 +1,25 @@
+device: 'cuda'
+dataset_path: '../data'
+
+num_classes: 
+input_height: 
+input_width:
+input_channel:
+
+batch_size: 256
+num_workers: 4
+
+pin_memory: True
+prefetch: False
+non_blocking: True
+
+weight_decay: 5e-2
+momentum: 0.9
+
+unlearn_lr: 0.001
+unlearn_epochs: 20
+unlearn_threshold: 0.2
+
+recovery_lr: 0.2
+recovery_epochs: 20
+recovery_drop: 0.02

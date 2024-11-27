@@ -1,0 +1,22 @@
+device: 'cuda'
+dataset_path: '../data'
+
+num_classes: 
+input_height: 
+input_width:
+input_channel:
+
+batch_size: 256
+num_workers: 4
+
+training_lr: 1e-3
+training_epochs: 50
+test_save_frequency: 10
+alpha: 1.2
+lambda_hyper: 0.5
+lambda_reduction_num: 10
+accuracy_reduction: 0.05
+
+pin_memory: True
+prefetch: False
+non_blocking: True

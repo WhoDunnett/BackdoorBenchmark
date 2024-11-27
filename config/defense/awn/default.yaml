@@ -1,0 +1,22 @@
+device: 'cuda'
+dataset_path: '../data'
+
+num_classes: 
+input_height: 
+input_width:
+input_channel:
+
+batch_size: 256
+num_workers: 4
+
+pin_memory: True
+prefetch: False
+non_blocking: True
+
+lr: 1e-2
+gamma: 0.9
+momentum: 0.9
+epochs: 20
+trigger_norm: 1000
+alpha: 0.9
+hyper_gamma: 1e-8

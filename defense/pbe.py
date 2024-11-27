@@ -33,7 +33,54 @@ from utils.save_load_attack import load_attack_result, save_defense_result
 from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform, spc_choose_poisoned_sample
 from tqdm import tqdm
 
-class FST(defense):
+def pgd_attack(model, images, labels, device, eps=0.3, alpha=0.01, iters=40):
+    """
+    Performs the PGD attack on a batch of images.
+
+    Parameters:
+    model (torch.nn.Module): The model to attack.
+    images (torch.Tensor): Batch of images to attack.
+    labels (torch.Tensor): True labels of the images.
+    eps (float): Maximum perturbation. (default: 0.3)
+    alpha (float): Step size. (default: 0.01)
+    iters (int): Number of iterations. (default: 40)
+
+    Returns:
+    torch.Tensor: Perturbed images.
+    """
+    images = images.clone().detach().to(device)
+
+    loss_fn = nn.CrossEntropyLoss()
+
+    # Start with a random perturbation in the epsilon ball
+    delta = torch.rand_like(images) * 2 * eps - eps
+    delta = delta.to(device).requires_grad_(True)
+
+    for _ in range(iters):
+        
+        adv_images = images + delta
+        outputs = model(adv_images)
+
+        loss = loss_fn(outputs, labels)
+        model.zero_grad()
+        loss.backward()
+        
+        grad = delta.grad.detach()
+
+        # Perform the gradient ascent step
+        delta.data = delta + alpha * grad.sign()
+        
+        # Clip the perturbation to keep it within the epsilon ball
+        delta.data = torch.clamp(delta, -eps, eps)
+        delta.data = torch.clamp(images + delta.data, 0, 1) - images
+        
+        delta.grad.zero_()
+
+    perturbed_images = images + delta.detach()
+    return perturbed_images
+
+
+class PBE(defense):
 
     def __init__(self):
         pass
@@ -67,17 +114,16 @@ class FST(defense):
         parser.add_argument('--result_file', type=str, help='the location of result')
         parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
 
-        parser.add_argument('--yaml_path', type=str, help='the path of yaml')
-
-        # set the parameter for the mmdf defense
+        parser.add_argument('--yaml_path', type=str, default="../config/defense/pbe/config.yaml", help='the path of yaml')
         parser.add_argument('--spc', type=int, help='the samples per class used for training')
         parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
         
-        # FST Arguments
-        parser.add_argument('--training_epochs', type=int, help='number of training epochs', default=15)
-        parser.add_argument('--momentum', type=float, help='momentum', default=0.9)
-        parser.add_argument('--lr', type=float, help='learning rate', default=0.01)
-        parser.add_argument('--alpha', type=float, help='alpha', default=0.2)
+        # PBE Arguments
+        parser.add_argument('--training_epochs', type=int, help='number of training epochs')
+        parser.add_argument('--adv_train_iters', type=int, help='number of adversarial training iterations')
+        parser.add_argument('--adv_train_eps', type=float, help='adversarial training epsilon')
+        parser.add_argument('--adv_train_alpha_scale', type=float, help='adversarial training alpha')
+        parser.add_argument('--lr', type=float, help='learning rate')
         
         return parser
 
@@ -101,9 +147,9 @@ class FST(defense):
         # Modified to be compatible with the new result_base and SPC
         # #######################################
         if args.spc is not None:
-            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
+            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "pbe" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
         else:
-            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
+            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "pbe" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
         
         os.makedirs(defense_save_path, exist_ok = True)
         args.defense_save_path = defense_save_path
@@ -162,9 +208,57 @@ class FST(defense):
         model = generate_cls_model(args.model, args.num_classes)
         model.load_state_dict(self.attack_result['model'])
         model.to(args.device)
-        model.eval()
 
         self.model = model
+        
+    def normal_train(self, model, train_loader, args):
+        
+        lr = args.lr
+        
+        criterion = nn.CrossEntropyLoss()
+        optim_model = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+        
+        for batch in train_loader:
+            
+            optim_model.zero_grad()
+
+            inputs, labels = batch[0].to(args.device), batch[1].to(args.device)
+            predictions = model(inputs)
+            
+            loss = criterion(predictions, labels)
+            loss.backward()
+            
+            optim_model.step()
+        
+    def adv_train(self, model, train_loader, args):
+
+        maxiter = args.adv_train_iters
+        eps = args.adv_train_eps
+        alpha = eps / args.adv_train_alpha_scale
+        lr = args.lr
+        
+        criterion = nn.CrossEntropyLoss()
+        
+        for batch in train_loader:
+            
+            inputs, labels = batch[0].to(args.device), batch[1].to(args.device)
+            
+            # NOTE: We use an alternative implementation of PGD attack here as the original method is unstable
+            # and the model outputs become to be NaN after a few iterations.
+            adversarial_inputs = pgd_attack(model, inputs, labels, args.device, eps=eps, alpha=alpha, iters=maxiter)           
+            optim_model = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+            
+            model.train()
+            for param in model.parameters():
+                param.requires_grad = True
+        
+            optim_model.zero_grad()
+            
+            predictions = model(adversarial_inputs)
+            loss = criterion(predictions, labels)
+            loss.backward()
+            
+            optim_model.step()     
 
     def defense(self):
 
@@ -208,85 +302,29 @@ class FST(defense):
 
         bd_test_dataset_with_transform = attack_result['bd_test']
         data_bd_testset = bd_test_dataset_with_transform
-
+        
         # ------------------------------- Training Loop -------------------------------
-        # https://github.com/AISafety-HKUST/Backdoor_Safety_Tuning/blob/main/fine_tune/ft.py
+        # https://github.com/John-niu-07/BPE/blob/main/pbe_main.py
         training_acc, training_asr, trianing_ra = [], [], []
         
-        # Save a reference so that the weights can be accessed later
-        original_weights = None
-        new_layer = None
+        # Set each model parameter to require grad
+        for param in model.parameters():
+            param.requires_grad = True
         
-        # Ensure each parameter requires a gradient
-        for name, param in model.named_parameters():
-            param.requires_grad = True   
-        
-        if args.model == 'preactresnet18':
-            original_weights = [model.linear.weight.data.clone()]
-            model.linear = nn.Linear(model.linear.in_features, args.num_classes).to(args.device)
-            new_layer = [model.linear]
-        elif args.model == 'vgg19_bn':
-            original_weights = [model.classifier[0].weight.data.clone(), model.classifier[3].weight.data.clone(), model.classifier[6].weight.data.clone()]
-            model.classifier[0] = nn.Linear(model.classifier[0].in_features, model.classifier[0].out_features).to(args.device)
-            model.classifier[3] = nn.Linear(model.classifier[3].in_features, model.classifier[3].out_features).to(args.device)
-            model.classifier[6] = nn.Linear(model.classifier[6].in_features, args.num_classes).to(args.device)
-            new_layer = [model.classifier[0], model.classifier[3], model.classifier[6]]
-        elif args.model == "mobilenet_v3_large":
-            original_weights = [model.classifier[0].weight.data.clone(), model.classifier[3].weight.data.clone()]
-            model.classifier[0] = nn.Linear(model.classifier[0].in_features, model.classifier[0].out_features).to(args.device)
-            model.classifier[3] = nn.Linear(model.classifier[3].in_features, args.num_classes).to(args.device)
-            new_layer = [model.classifier[0], model.classifier[3]]
-        elif args.model == "efficientnet_b3":
-            original_weights = [model.classifier[1].weight.data.clone()]
-            model.classifier[1] = nn.Linear(model.classifier[1].in_features, args.num_classes).to(args.device)
-            new_layer = [model.classifier[1]]
-        else:
-            raise Exception("Model not supported")
-        
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.training_epochs)
-        critierion = nn.CrossEntropyLoss()
-        
-        acc, asr, ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), args)
-        logging.info(f'Initial acc:{acc}  asr:{asr}  ra:{ra}')
-        
+        # NOTE: The following training procedure is referred to as AFT in the original work
+        # The paper describes iterating between Step-1 and Step-2 in Algorithm 1
+        # The provided implementation doesnt do this. However, we will follow the paper's description
         for epoch in range(args.training_epochs):
             
-            epoch_loss = 0
+            self.adv_train(model, train_loader, args)
+            self.normal_train(model, train_loader, args)
             
-            model.train()
-            for batch in tqdm(train_loader):
-                inputs, labels = batch[0].to(args.device), batch[1].to(args.device)
-                
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                
-                # Loss 1 is the inner product of the original weights and the new weights
-                inner_product = torch.tensor(0.0).to(args.device)
-                for i in range(len(original_weights)):
-                    inner_product += torch.sum(original_weights[i] * new_layer[i].weight.data)
-                
-                # Loss 2 is the cross entropy loss
-                ce_loss = critierion(outputs, labels)
-                
-                # Total loss and backpropagation
-                loss = ce_loss + (args.alpha * inner_product)
-                loss.backward()
-                
-                optimizer.step()
-                
-                batch_loss = loss.item()
-                epoch_loss += batch_loss
-                
-                # Normalize the weights
-                for i in range(len(original_weights)):
-                   new_layer[i].weight.data = (new_layer[i].weight.data / torch.norm(new_layer[i].weight.data, p=2)) * torch.norm(original_weights[i], p=2)
-                
-            scheduler.step()
+            logging.info(f'Epoch {epoch} training completed')
             
-            acc, asr, ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), args)
-            logging.info(f'Epoch {epoch}  loss:{epoch_loss}  acc:{acc}  asr:{asr}  ra:{ra}')
+            acc, asr, ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), self.args)
             training_acc.append(acc), training_asr.append(asr), trianing_ra.append(ra)
+            
+            logging.info(f'Epoch {epoch} acc:{acc}  asr:{asr}  ra:{ra}')
         
         # ------------------------------- Final Test -------------------------------
         test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, nn.CrossEntropyLoss(), self.args)
@@ -321,11 +359,11 @@ class FST(defense):
 
 if __name__ == '__main__':
     torch.autograd.set_detect_anomaly(True)
-    fst = FST()
+    pbe = PBE()
     parser = argparse.ArgumentParser(description=sys.argv[0])
-    parser = fst.set_args(parser)
+    parser = pbe.set_args(parser)
     args = parser.parse_args()
-    fst.add_yaml_to_args(args)
-    args = fst.process_args(args)
-    fst.prepare(args)
-    fst.defense()
+    pbe.add_yaml_to_args(args)
+    args = pbe.process_args(args)
+    pbe.prepare(args)
+    pbe.defense()
