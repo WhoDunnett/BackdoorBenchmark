@@ -264,13 +264,13 @@ class FST(defense):
                 # Loss 1 is the inner product of the original weights and the new weights
                 inner_product = torch.tensor(0.0).to(args.device)
                 for i in range(len(original_weights)):
-                    inner_product += torch.sum(original_weights[i] * new_layer[i].weight.data)
+                    inner_product += torch.sum(original_weights[i] * new_layer[i].weight)
                 
                 # Loss 2 is the cross entropy loss
                 ce_loss = critierion(outputs, labels)
                 
                 # Total loss and backpropagation
-                loss = ce_loss + (args.alpha * inner_product)
+                loss = (args.alpha * inner_product) + ce_loss
                 loss.backward()
                 
                 optimizer.step()

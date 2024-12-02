@@ -238,6 +238,7 @@ class PBE(defense):
         lr = args.lr
         
         criterion = nn.CrossEntropyLoss()
+        optim_model = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
         
         for batch in train_loader:
             
@@ -246,7 +247,6 @@ class PBE(defense):
             # NOTE: We use an alternative implementation of PGD attack here as the original method is unstable
             # and the model outputs become to be NaN after a few iterations.
             adversarial_inputs = pgd_attack(model, inputs, labels, args.device, eps=eps, alpha=alpha, iters=maxiter)           
-            optim_model = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
             
             model.train()
             for param in model.parameters():
