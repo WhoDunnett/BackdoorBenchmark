@@ -5,25 +5,43 @@ Corresponding Author: kealan.dunnett@hdr.qut.edu.au (Kealan Dunnett)
 
 ## Compatible Defenses
 Below we list the compatible defenses and provide an example command that can be used to run them.
-- ANP (NOT Migrated)
-- AWN (NOT Migrated)
-- BNP (NOT Migrated)
+- ANP (Migrated TESTED)
+```
+python defense/anp.py --yaml_path ../config/defense/anp/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
+- AWN (Migrated TESTED) [NEW METHOD]
+```
+python defense/awn.py --yaml_path ../config/defense/awn/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
+- BNP (Migrated TESTED)
+```
+python defense/bnp.py --yaml_path ../config/defense/bnp/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
 - CLP (NOT Migrated)
 - FP (NOT Migrated)
 - FT (NOT Migrated)
-- FST (Migrated TESTED)
+- FST (Migrated TESTED) [NEW METHOD]
 ```
-python defense/fst.py --yaml_path ../config/defense/fst/cifar10.yaml --model MODEL_NAME --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file ATTACK_MODEL_FOLDER
+python defense/fst.py --yaml_path ../config/defense/fst/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
 ```
 - FT-SAM (NOT Migrated)
 - i-BAU (NOT Migrated)
 - NAD (NOT Migrated)
 - NC (NOT Migrated)
 - NPD (NOT Migrated)
-- PBE (NOT Migrated)
-- RNP (NOT Migrated)
+- PBE (Migrated TESTED) [NEW METHOD]
+```
+python defense/pbe.py --yaml_path ../config/defense/pbe/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
+- RNP (Migrated TESTED)
+```
+python defense/rnp.py --yaml_path ../config/defense/rnp/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
 - SAU (NOT Migrated)
-- MM-BD (NOT Migrated)
+- MM-BD (Migrated TESTED) [NEW METHOD]
+```
+python defense/mm-bd.py --yaml_path ../config/defense/mm-bd/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
 
 #### Major Changes
 - Each defence is evaluated after training is complete with the results saved to a file called "final_result.csv"
