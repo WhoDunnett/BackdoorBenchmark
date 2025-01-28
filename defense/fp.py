@@ -29,6 +29,8 @@ import torch
 import torch.nn as nn
 import math
 import shutil
+
+os.chdir(sys.path[0])
 sys.path.append('../')
 sys.path.append(os.getcwd())
 
@@ -38,17 +40,20 @@ import logging
 import time
 from copy import deepcopy
 import torch.nn.utils.prune as prune
+import pandas as pd
+import copy
+from torch.utils.data import DataLoader
 
 from defense.base import defense
 from utils.aggregate_block.train_settings_generate import argparser_opt_scheduler
-from utils.trainer_cls import ModelTrainerCLS_v2, BackdoorModelTrainer, Metric_Aggregator, given_dataloader_test, general_plot_for_epoch
+from utils.trainer_cls import ModelTrainerCLS_v2, BackdoorModelTrainer, Metric_Aggregator, given_dataloader_test, general_plot_for_epoch, given_dataloader_test_v2
 from utils.choose_index import choose_index
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.log_assist import get_git_info
 from utils.aggregate_block.dataset_and_transform_generate import get_input_shape, get_num_classes, get_transform
 from utils.save_load_attack import load_attack_result, save_defense_result
-from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform
+from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform, spc_choose_poisoned_sample
 
 class FinePrune(defense):
     r"""Fine-Pruning: Defending Against Backdooring Attacks on Deep Neural Networks
@@ -136,9 +141,13 @@ class FinePrune(defense):
         parser.add_argument('--random_seed', type=int, help='random seed')
         parser.add_argument('--index', type=str, help='index of clean data')
         parser.add_argument('--result_file', type=str, help='the location of result')
+        parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
+
         parser.add_argument('--yaml_path', type=str, default="./config/defense/fp/config.yaml", help='the path of yaml')
 
         # set the parameter for the fp defense
+        parser.add_argument('--spc', type=int, help='the samples per class used for training')
+        parser.add_argument('--val_ratio', type=float, help='the ratio of validation data loader')
         parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
         parser.add_argument('--acc_ratio', type=float, help='the tolerance ration of the clean accuracy')
         parser.add_argument("--once_prune_ratio", type = float, help ="how many percent once prune. in 0 to 1")
@@ -157,20 +166,15 @@ class FinePrune(defense):
         args.img_size = (args.input_height, args.input_width, args.input_channel)
         args.dataset_path = f"{args.dataset_path}/{args.dataset}"
 
-        defense_save_path = "record" + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fp"
-        # if os.path.exists(defense_save_path): 
-        #     shutil.rmtree(defense_save_path)
+        # #######################################
+        # Modified to be compatible with the new result_base and SPC
+        # #######################################
+        if args.spc is not None:
+            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
+        else:
+            defense_save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
+        
         os.makedirs(defense_save_path, exist_ok = True)
-        # save_path = '/record/' + args.result_file
-        # if args.checkpoint_save is None:
-        #     args.checkpoint_save = save_path + '/record/defence/fp/'
-        #     if not (os.path.exists(os.getcwd() + args.checkpoint_save)):
-        #         os.makedirs(os.getcwd() + args.checkpoint_save)
-        # if args.log is None:
-        #     args.log = save_path + '/saved/fp/'
-        #     if not (os.path.exists(os.getcwd() + args.log)):
-        #         os.makedirs(os.getcwd() + args.log)
-        # args.save_path = save_path
         args.defense_save_path = defense_save_path
         return args
 
@@ -222,7 +226,7 @@ class FinePrune(defense):
                         'bd_test': bd_test_dataset_with_transform,
                     }
                 '''
-        self.attack_result = load_attack_result("record" + os.path.sep + self.args.result_file + os.path.sep +'attack_result.pt')
+        self.attack_result = load_attack_result(args.result_base + os.path.sep + self.args.result_file + os.path.sep +'attack_result.pt')
 
         netC = generate_cls_model(args.model, args.num_classes)
         netC.load_state_dict(self.attack_result['model'])
@@ -237,30 +241,41 @@ class FinePrune(defense):
         netC = self.netC
         args = self.args
         attack_result = self.attack_result
-        # clean_train with subset
-        clean_train_dataset_with_transform = attack_result['clean_train']
-        clean_train_dataset_without_transform = clean_train_dataset_with_transform.wrapped_dataset
-        clean_train_dataset_without_transform = prepro_cls_DatasetBD_v2(
-            clean_train_dataset_without_transform
-        )
-        ran_idx = choose_index(args, len(clean_train_dataset_without_transform))
-        logging.info(f"get ran_idx for subset clean train dataset, (len={len(ran_idx)}), ran_idx:{ran_idx}")
-        clean_train_dataset_without_transform.subset(
-            choose_index(args, len(clean_train_dataset_without_transform))
-        )
-        clean_train_dataset_with_transform.wrapped_dataset = clean_train_dataset_without_transform
-        log_index = args.defense_save_path + os.path.sep + 'index.txt'
-        np.savetxt(log_index, ran_idx, fmt='%d')
-        trainloader = torch.utils.data.DataLoader(clean_train_dataset_with_transform, batch_size=args.batch_size, num_workers=args.num_workers,
-                                                  shuffle=True)
+
+        # ------------------------------- Code from FP -------------------------------
+        # Setup dataloaders
+        
+        clean_train_dataset, clean_val_dataset = copy.deepcopy(attack_result['clean_train']), copy.deepcopy(attack_result['clean_train'])
+        clean_train_wrapper, clean_val_wrapper = copy.deepcopy(clean_train_dataset.wrapped_dataset), copy.deepcopy(clean_train_dataset.wrapped_dataset)
+        clean_train_wrapper, clean_val_wrapper = prepro_cls_DatasetBD_v2(clean_train_wrapper), prepro_cls_DatasetBD_v2(clean_val_wrapper)
+        
+        # #######################################
+        # Modified to be compatible with SPC
+        # Requires validation set to be a subset of the training set
+        # #######################################
+        if args.spc is not None:
+            train_idx, val_idx = spc_choose_poisoned_sample(clean_train_wrapper, args.spc, val_ratio=args.val_ratio)
+        else:
+            ran_idx = choose_index(args, len(clean_train_wrapper))
+            train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
+            val_idx = np.setdiff1d(np.arange(len(ran_idx)), train_idx)
+
+        clean_train_wrapper.subset(train_idx), clean_val_wrapper.subset(val_idx)
+        clean_train_dataset.wrapped_dataset = clean_train_wrapper
+        clean_val_dataset.wrapped_dataset = clean_val_wrapper
+
+        logging.info(f'len of train dataset: {len(clean_train_dataset)}')
+        logging.info(f'len of validation dataset: {len(clean_val_dataset)}')
+
+        train_loader = DataLoader(clean_train_dataset, batch_size=args.batch_size, num_workers=args.num_workers,drop_last=False, shuffle=True,pin_memory=True)
+        val_loader = DataLoader(clean_val_dataset, batch_size=args.batch_size, num_workers=args.num_workers,drop_last=False, shuffle=True,pin_memory=True)
+        
 
         clean_test_dataset_with_transform = attack_result['clean_test']
         data_clean_testset = clean_test_dataset_with_transform
         clean_test_dataloader = torch.utils.data.DataLoader(data_clean_testset, batch_size=args.batch_size,
                                                         num_workers=args.num_workers, drop_last=False, shuffle=True,
                                                         pin_memory=args.pin_memory)
-
-        # bd_train_dataset_with_transform = attack_result['bd_train']
 
         bd_test_dataset_with_transform = attack_result['bd_test']
         data_bd_testset = bd_test_dataset_with_transform
@@ -269,7 +284,7 @@ class FinePrune(defense):
                                                      num_workers=args.num_workers, drop_last=False, shuffle=True,
                                                      pin_memory=args.pin_memory)
 
-
+        # ------------------------------- Pruning Loop -------------------------------
         criterion = nn.CrossEntropyLoss()
 
         if args.model == "vit_b_16":
@@ -303,13 +318,13 @@ class FinePrune(defense):
         logging.info("Forwarding all the training dataset:")
         with torch.no_grad():
             flag = 0
-            for batch_idx, (inputs, *other) in enumerate(trainloader):
+            for batch_idx, (inputs, *other) in enumerate(train_loader):
                 inputs = inputs.to(args.device)
                 _ = netC(inputs)
                 if flag == 0:
                     activation = torch.zeros(result_mid.size()[1]).to(args.device)
                     flag = 1
-                activation += torch.sum(result_mid, dim=[0]) / len(clean_train_dataset_without_transform)
+                activation += torch.sum(result_mid, dim=[0]) / len(clean_train_dataset)
         hook.remove()
 
         seq_sort = torch.argsort(activation)
@@ -352,6 +367,9 @@ class FinePrune(defense):
             test_acc = given_dataloader_test(net_pruned, clean_test_dataloader, criterion, args.non_blocking, args.device)[0]['test_acc']
             test_asr = given_dataloader_test(net_pruned, bd_test_dataloader, criterion, args.non_blocking, args.device)[0]['test_acc']
 
+            # val 
+            val_acc = given_dataloader_test(net_pruned, val_loader, criterion, args.non_blocking, args.device)[0]['test_acc']
+
             # use switch in preprocess bd dataset v2
             bd_test_dataset_without_transform.getitem_all_switch = True
             test_ra = given_dataloader_test(net_pruned, bd_test_dataloader, criterion, args.non_blocking, args.device)[0]['test_acc']
@@ -369,11 +387,17 @@ class FinePrune(defense):
             test_asr_list.append(float(test_asr))
             test_ra_list.append(float(test_ra))
 
+            logging.info(f'Validation acc:{val_acc}')
+
+            # #######################################
+            # Modified to use validation set
+            # Original code uses test set
+            # #######################################
             if num_pruned == 0:
-                test_acc_cl_ori = test_acc
+                val_acc_cl_ori = val_acc
                 last_net = (net_pruned)
                 last_index = 0
-            if abs(test_acc - test_acc_cl_ori) / test_acc_cl_ori < args.acc_ratio:
+            if abs(val_acc - val_acc_cl_ori) / val_acc_cl_ori < args.acc_ratio:
                 last_net = (net_pruned)
                 last_index = num_pruned
             else:
@@ -408,7 +432,7 @@ class FinePrune(defense):
         )
 
         finetune_trainer.train_with_test_each_epoch_on_mix(
-            trainloader,
+            train_loader,
             clean_test_dataloader,
             bd_test_dataloader,
             args.epochs,
@@ -425,28 +449,26 @@ class FinePrune(defense):
             non_blocking=args.non_blocking,
         )
 
+        # ------------------------------- Final Test -------------------------------
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(last_net, data_clean_testset, data_bd_testset, criterion, self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.defense_save_path, "final_result.csv"))
+
         save_defense_result(
             model_name = args.model,
             num_classes = args.num_classes,
             model = last_net.cpu().state_dict(),
             save_path = self.args.defense_save_path,
         )
-
-        # mask = deepcopy(first_linear_module_in_last_child.weight_mask)
-        # prune.remove(first_linear_module_in_last_child, 'weight')
-        #
-        # torch.save(
-        #     {
-        #         'model_name': args.model,
-        #         'model': last_net.cpu().state_dict(),
-        #         'seq_sort': seq_sort,
-        #         "num_pruned":num_pruned,
-        #         "mask":mask,
-        #         "last_child_name":last_child_name,
-        #         "first_module_name":first_module_name,
-        #     },
-        #     self.args.defense_save_path+os.path.sep+"defense_result.pt"
-        # )
 
 if __name__ == '__main__':
     fp = FinePrune()

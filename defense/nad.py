@@ -46,9 +46,11 @@ import yaml
 from pprint import pformat
 import torch.nn as nn
 import torch.nn.functional as F
-
 import tqdm
+import pandas as pd
+import copy
 
+os.chdir(sys.path[0])
 sys.path.append('../')
 sys.path.append(os.getcwd())
 
@@ -58,16 +60,14 @@ import numpy as np
 from defense.base import defense
 
 from utils.aggregate_block.train_settings_generate import argparser_criterion, argparser_opt_scheduler
-from utils.trainer_cls import BackdoorModelTrainer, PureCleanModelTrainer, all_acc
+from utils.trainer_cls import BackdoorModelTrainer, PureCleanModelTrainer, all_acc, given_dataloader_test_v2
 from utils.choose_index import choose_index
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.log_assist import get_git_info
 from utils.aggregate_block.dataset_and_transform_generate import get_input_shape, get_num_classes, get_transform
 from utils.save_load_attack import load_attack_result, save_defense_result
-from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2
-
-
+from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, spc_choose_poisoned_sample
 
 
 '''
@@ -635,6 +635,7 @@ class nad(defense):
         parser.add_argument("--dataset_path", type=str, help='the location of data')
         parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
         parser.add_argument('--result_file', type=str, help='the location of result')
+        parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
     
         parser.add_argument('--epochs', type=int)
         parser.add_argument('--batch_size', type=int)
@@ -654,38 +655,48 @@ class nad(defense):
 
         parser.add_argument('--random_seed', type=int, help='random seed')
         parser.add_argument('--yaml_path', type=str, default="./config/defense/nad/config.yaml", help='the path of yaml')
+        parser.add_argument('--bd_yaml_path', type=str, default=None, help='the path of yaml')
 
         #set the parameter for the nad defense
         parser.add_argument('--ratio', type=float, help='ratio of training data')
-        parser.add_argument('--index', type=str, help='index of clean data')
+        parser.add_argument('--spc', type=int, help='the samples per class used for training')
+
         parser.add_argument('--te_epochs', type=int)
+        parser.add_argument('--momentum', type=float, help='momentum')
+        parser.add_argument('--weight_decay', type=float, help='weight decay')
         parser.add_argument('--beta1', type=int, help='beta of low layer')
         parser.add_argument('--beta2', type=int, help='beta of middle layer')
         parser.add_argument('--beta3', type=int, help='beta of high layer')
         parser.add_argument('--p', type=float, help='power for AT')
 
         parser.add_argument('--teacher_model_loc', type=str, help='the location of teacher model')
-
-        
+        parser.add_argument('--index', type=str, help='index of clean data')
 
     
 
     def set_result(self, result_file):
-        attack_file = 'record/' + result_file
-        save_path = 'record/' + result_file + '/defense/nad/'
-        if not (os.path.exists(save_path)):
-            os.makedirs(save_path)
-        # assert(os.path.exists(save_path))    
+        attack_file = args.result_base + os.path.sep + result_file
+        
+        # #######################################
+        # Modified to be compatible with the new result_base and SPC
+        # #######################################
+        if args.spc is not None:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
+        else:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
+        
+        os.makedirs(save_path, exist_ok = True)
+
         self.args.save_path = save_path
         if self.args.checkpoint_save is None:
-            self.args.checkpoint_save = save_path + 'checkpoint/'
+            self.args.checkpoint_save = save_path + 'checkpoint' + os.path.sep
             if not (os.path.exists(self.args.checkpoint_save)):
                 os.makedirs(self.args.checkpoint_save) 
         if self.args.log is None:
-            self.args.log = save_path + 'log/'
+            self.args.log = save_path + 'log' + os.path.sep
             if not (os.path.exists(self.args.log)):
                 os.makedirs(self.args.log)  
-        self.result = load_attack_result(attack_file + '/attack_result.pt')
+        self.result = load_attack_result(attack_file + os.path.sep + 'attack_result.pt')
 
     def set_trainer(self, model, mode = 'normal', **params):
         if mode == 'normal':
@@ -781,11 +792,24 @@ class nad(defense):
 
         train_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = True)
         clean_dataset = prepro_cls_DatasetBD_v2(self.result['clean_train'].wrapped_dataset)
-        data_all_length = len(clean_dataset)
-        ran_idx = choose_index(self.args, data_all_length) 
-        log_index = self.args.log + 'index.txt'
-        np.savetxt(log_index, ran_idx, fmt='%d')
-        clean_dataset.subset(ran_idx)
+        
+        # #######################################
+        # Modified to be compatible with SPC
+        # Note: Some methods require validation and therefore SPC cannot be 1
+        # #######################################
+        if args.spc is not None:
+            spc_use = args.spc
+            if args.spc < 1: 
+                raise Exception("SPC must be greater than 1")
+            if args.spc == 1: spc_use = 2
+            train_idx, _ = spc_choose_poisoned_sample(clean_dataset, spc_use, val_ratio=0)
+        else:
+            ran_idx = choose_index(args, len(clean_dataset))
+            train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
+
+        clean_dataset.subset(train_idx)
+        logging.info(f'Clean dataset length: {len(clean_dataset)}')
+
         data_set_without_tran = clean_dataset
         data_set_o = self.result['clean_train']
         data_set_o.wrapped_dataset = data_set_without_tran
@@ -855,7 +879,21 @@ class nad(defense):
                 prefetch_transform_attr_name="ori_image_transform_in_loading", # since we use the preprocess_bd_dataset
                 non_blocking=args.non_blocking,
             )
-        
+
+        # ------------------------------- Final Test -------------------------------
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(student, data_clean_testset, data_bd_testset, criterionCls, self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
+
         result = {}
         result['model'] = student
         save_defense_result(
@@ -864,6 +902,7 @@ class nad(defense):
             model=student.cpu().state_dict(),
             save_path=args.save_path,
         )
+
         return result
 
     def defense(self,result_file):

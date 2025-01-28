@@ -195,7 +195,6 @@ class FST(defense):
             train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
         
         clean_train_wrapper.subset(train_idx)
-    
         clean_train_dataset.wrapped_dataset = clean_train_wrapper
 
         logging.info(f'Len of train dataset: {len(clean_train_dataset)}')

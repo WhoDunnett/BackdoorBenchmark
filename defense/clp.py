@@ -35,8 +35,9 @@ import os,sys
 import numpy as np
 import torch
 import torch.nn as nn
+import pandas as pd
 
-
+os.chdir(sys.path[0])
 sys.path.append('../')
 sys.path.append(os.getcwd())
 
@@ -46,7 +47,7 @@ import logging
 import time
 from defense.base import defense
 from utils.aggregate_block.train_settings_generate import argparser_criterion
-from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer, general_plot_for_epoch
+from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer, general_plot_for_epoch, given_dataloader_test_v2
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.log_assist import get_git_info
@@ -160,6 +161,7 @@ class clp(defense):
         parser.add_argument("--dataset_path", type=str, help='the location of data')
         parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
         parser.add_argument('--result_file', type=str, help='the location of result')
+        parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
     
         parser.add_argument('--epochs', type=int)
         parser.add_argument('--batch_size', type=int)
@@ -188,8 +190,12 @@ class clp(defense):
 
 
     def set_result(self, result_file):
-        attack_file = 'record/' + result_file
-        save_path = 'record/' + result_file + '/defense/clp/'
+        
+        # #######################################
+        # Modified to use os.path.sep
+        # #######################################
+        attack_file = args.result_base + os.path.sep + result_file
+        save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "clp" + os.path.sep + str(args.random_seed) + os.path.sep
         if not (os.path.exists(save_path)):
             os.makedirs(save_path)
         # assert(os.path.exists(save_path))    
@@ -303,7 +309,7 @@ class clp(defense):
                 amp = self.args.amp,
 
                 frequency_save = self.args.frequency_save,
-                save_folder_path = self.args.save_path,
+                save_folder_path = self.args.save_path + os.path.sep,
                 save_prefix = 'clp',
 
                 prefetch = self.args.prefetch,
@@ -413,6 +419,19 @@ class clp(defense):
 
         logging.info(f'the threshold{args.u} clean_loss:{clean_test_loss_avg_over_batch} bd_loss:{bd_test_loss_avg_over_batch} clean_acc:{test_acc} asr:{test_asr} ra:{test_ra}')
 
+        # ------------------------------- Final Test -------------------------------
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, criterion, self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
 
         result = {}
         result['model'] = model
@@ -422,6 +441,7 @@ class clp(defense):
             model=model.cpu().state_dict(),
             save_path=args.save_path,
         )
+
         return result
 
     def defense(self,result_file):

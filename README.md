@@ -17,18 +17,42 @@ python defense/awn.py --yaml_path ../config/defense/awn/default.yaml --model pre
 ```
 python defense/bnp.py --yaml_path ../config/defense/bnp/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
 ```
-- CLP (NOT Migrated)
-- FP (NOT Migrated)
-- FT (NOT Migrated)
+- CLP (Migrated TESTED)
+```
+python defense/clp.py --yaml_path ../config/defense/clp/cifar10.yaml --model preactresnet18 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
+- FP (Migrated TESTED)
+```
+python defense/fp.py --yaml_path ../config/defense/fp/cifar10.yaml --model preactresnet18 --spc 10 --val_ratio 0.1 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
+- FT (Migrated TESTED)
+```
+python defense/ft.py --yaml_path ../config/defense/ft/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
 - FST (Migrated TESTED) [NEW METHOD]
 ```
 python defense/fst.py --yaml_path ../config/defense/fst/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
 ```
-- FT-SAM (NOT Migrated)
-- i-BAU (NOT Migrated)
-- NAD (NOT Migrated)
-- NC (NOT Migrated)
-- NPD (NOT Migrated)
+- FT-SAM (Migrated TESTED)
+```
+python defense/ft-sam.py --yaml_path ../config/defense/ft-sam/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
+- i-BAU (Migrated TESTED)
+```
+python defense/i-bau.py --yaml_path ../config/defense/i-bau/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
+- NAD (Migrated TESTED)
+```
+python defense/nad.py --yaml_path ../config/defense/nad/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
+- NC (Migrated TESTED)
+```
+python defense/nc.py --yaml_path ../config/defense/nc/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
+- NPD (Migrated TESTED)
+```
+python defense/npd.py --yaml_path ../config/defense/npd/cifar10_preactresnet18.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
 - PBE (Migrated TESTED) [NEW METHOD]
 ```
 python defense/pbe.py --yaml_path ../config/defense/pbe/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
@@ -37,7 +61,10 @@ python defense/pbe.py --yaml_path ../config/defense/pbe/default.yaml --model pre
 ```
 python defense/rnp.py --yaml_path ../config/defense/rnp/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
 ```
-- SAU (NOT Migrated)
+- SAU (Migrated TESTED)
+```
+python3 defense/sau.py --yaml_path ../config/defense/sau/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
 - MM-BD (Migrated TESTED) [NEW METHOD]
 ```
 python defense/mm-bd.py --yaml_path ../config/defense/mm-bd/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10

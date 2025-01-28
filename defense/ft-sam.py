@@ -26,6 +26,8 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+os.chdir(sys.path[0])
+sys.path.append('../')
 sys.path.append(os.getcwd())
 
 # TODO:修改yaml文件
@@ -34,18 +36,21 @@ from pprint import  pformat
 import yaml
 import logging
 import time
+import copy
+import pandas as pd
+
 from defense.base import defense
 from utils.defense_utils.sam import SAM, ProportionScheduler
 from utils.defense_utils.sam import smooth_crossentropy
 
 from utils.aggregate_block.train_settings_generate import argparser_criterion, argparser_opt_scheduler
-from utils.trainer_cls import Metric_Aggregator
-from utils.choose_index import choose_index,choose_by_class
+from utils.trainer_cls import Metric_Aggregator, given_dataloader_test_v2
+from utils.choose_index import choose_index
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.aggregate_block.dataset_and_transform_generate import get_input_shape, get_num_classes, get_transform
 from utils.save_load_attack import load_attack_result, save_defense_result
-from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2
+from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, spc_choose_poisoned_sample, dataset_wrapper_with_transform
 
 
 
@@ -166,6 +171,7 @@ class dsam(defense):
         parser.add_argument("--dataset_path", type=str, help='the location of data')
         parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
         parser.add_argument('--result_file', type=str, help='the location of result')
+        parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
     
         parser.add_argument('--epochs', type=int)
         parser.add_argument('--batch_size', type=int)
@@ -188,6 +194,7 @@ class dsam(defense):
         parser.add_argument('--bd_yaml_path', type=str, default=None, help='the path of yaml')
 
         #set the parameter for the dsam defense
+        parser.add_argument('--spc', type=int, help='the samples per class used for training')
         parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
         parser.add_argument('--index', type=str, help='index of clean data')
 
@@ -200,19 +207,28 @@ class dsam(defense):
         parser.add_argument("--checkpoint_path", default=None, type=str, help="specify the checkpoint")
 
     def set_result(self, result_file):
-        attack_file = 'record/' + result_file
-        # save_path = 'record/' + result_file + f'/defense/epochs_{args.epochs}_dsam_{args.ratio}_lr_{args.lr}_rho_{args.rho}/'
-        save_path = 'record/' + result_file + f'/defense/ft-sam/'
+        attack_file = args.result_base + os.path.sep + result_file
+        
+        # #######################################
+        # Modified to be compatible with the new result_base and SPC
+        # #######################################
+        if args.spc is not None:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
+        else:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
+        
+        os.makedirs(save_path, exist_ok = True)
+  
         self.args.save_path = save_path
         if self.args.checkpoint_save is None:
-            self.args.checkpoint_save = save_path + 'checkpoint/'
+            self.args.checkpoint_save = save_path + 'checkpoint' + os.path.sep
             if not (os.path.exists(self.args.checkpoint_save)):
                 os.makedirs(self.args.checkpoint_save) 
         if self.args.log is None:
-            self.args.log = save_path + 'log/'
+            self.args.log = save_path + 'log' + os.path.sep
             if not (os.path.exists(self.args.log)):
-                os.makedirs(self.args.log)  
-        self.result = load_attack_result(attack_file + '/attack_result.pt')
+                os.makedirs(self.args.log)   
+        self.result = load_attack_result(attack_file + os.path.sep + 'attack_result.pt')
 
     def set_logger(self):
         args = self.args
@@ -425,19 +441,37 @@ class dsam(defense):
         criterion = argparser_criterion(args)
 
         train_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = True)
-        clean_dataset = prepro_cls_DatasetBD_v2(self.result['clean_train'].wrapped_dataset)
-        # data_all_length = len(clean_dataset)
-        # ran_idx = choose_index(self.args, data_all_length) 
-        ran_idx = choose_by_class(args,clean_dataset)
-        log_index = self.args.log + 'index.txt'
-        np.savetxt(log_index, ran_idx, fmt='%d')
-        clean_dataset.subset(ran_idx)
-        data_set_without_tran = clean_dataset
-        data_set_o = self.result['clean_train']
-        data_set_o.wrapped_dataset = data_set_without_tran
-        data_set_o.wrap_img_transform = train_tran
-        data_loader = torch.utils.data.DataLoader(data_set_o, batch_size=self.args.batch_size, num_workers=self.args.num_workers, shuffle=True, pin_memory=args.pin_memory)
-        trainloader = data_loader
+        
+        ##############################################
+        # MODIFICATION MADE HERE
+
+        # Get the datasets
+        clean_train_dataset = self.result['clean_train']
+        clean_train_wrapper = copy.deepcopy(clean_train_dataset.wrapped_dataset)
+        clean_train_wrapper = prepro_cls_DatasetBD_v2(clean_train_wrapper)
+        
+        # #######################################
+        # Modified to be compatible with SPC
+        # Note: Some methods require validation and therefore SPC cannot be 1
+        # #######################################
+        if args.spc is not None:
+            spc_use = args.spc
+            if args.spc < 1: 
+                raise Exception("SPC must be greater than 1")
+            if args.spc == 1: spc_use = 2
+            train_idx, _ = spc_choose_poisoned_sample(clean_train_wrapper, spc_use, val_ratio=0)
+        else:
+            ran_idx = choose_index(args, len(clean_train_wrapper))
+            train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
+
+        clean_train_wrapper.subset(train_idx)
+
+        data_set_clean = dataset_wrapper_with_transform(clean_train_wrapper, train_tran)
+        data_set_clean.wrapped_dataset = clean_train_wrapper
+        data_set_clean.wrap_img_transform = train_tran
+
+        print(f"Train: {len(data_set_clean)}")
+        clean_train_loader = torch.utils.data.DataLoader(data_set_clean, batch_size=args.batch_size, num_workers=args.num_workers,drop_last=False, shuffle=True,pin_memory=args.pin_memory)
         
         test_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = False)
         data_bd_testset = self.result['bd_test']
@@ -450,7 +484,7 @@ class dsam(defense):
 
         self.train_sam(
             model,
-            trainloader,
+            clean_train_loader,
             data_clean_loader,
             data_bd_loader,
             args.epochs,
@@ -466,7 +500,21 @@ class dsam(defense):
             prefetch_transform_attr_name="ori_image_transform_in_loading", # since we use the preprocess_bd_dataset
             non_blocking=args.non_blocking,
         )
-        
+
+        # ------------------------------- Final Test -------------------------------
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, criterion, self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(self.args.save_path, "final_result.csv"))
+
         result = {}
         result['model'] = model
 
@@ -476,6 +524,7 @@ class dsam(defense):
             model=model.cpu().state_dict(),
             save_path=args.save_path,
         )
+
         return result
 
     def defense(self,result_file):

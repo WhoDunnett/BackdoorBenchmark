@@ -61,7 +61,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import cv2
+import copy
 
+os.chdir(sys.path[0])
 sys.path.append('../')
 sys.path.append(os.getcwd())
 
@@ -73,16 +75,17 @@ from defense.base import defense
 from matplotlib import image as mlt
 from PIL import Image
 import torchvision
+import pandas as pd
 
 from utils.aggregate_block.train_settings_generate import argparser_criterion, argparser_opt_scheduler
-from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer
+from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer, given_dataloader_test_v2
 from utils.choose_index import choose_index
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.log_assist import get_git_info
 from utils.aggregate_block.dataset_and_transform_generate import get_input_shape, get_num_classes, get_transform
 from utils.save_load_attack import load_attack_result, save_defense_result
-from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, xy_iter
+from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, xy_iter, spc_choose_poisoned_sample
 
 class Normalize:
 
@@ -505,8 +508,10 @@ class nc(defense):
         parser.add_argument('--log', type=str, help='the location of log')
         parser.add_argument("--dataset_path", type=str, help='the location of data')
         parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
+        
         parser.add_argument('--result_file', type=str, help='the location of result')
-    
+        parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
+        
         parser.add_argument('--epochs', type=int)
         parser.add_argument('--batch_size', type=int)
         parser.add_argument("--num_workers", type=float)
@@ -527,31 +532,38 @@ class nc(defense):
         parser.add_argument('--yaml_path', type=str, default="./config/defense/nc/config.yaml", help='the path of yaml')
 
         #set the parameter for the nc defense
+        parser.add_argument('--spc', type=int, help='the samples per class used for training')
         parser.add_argument('--ratio', type=float,  help='ratio of training data')
-        parser.add_argument('--index', type=str, help='index of clean data')
         parser.add_argument('--cleaning_ratio', type=float,  help='ratio of cleaning data')
         parser.add_argument('--unlearning_ratio', type=float, help='ratio of unlearning data')
         parser.add_argument('--nc_epoch', type=int,  help='the epoch for neural cleanse')
 
+        parser.add_argument('--index', type=str, help='index of clean data')
         
 
     def set_result(self, result_file):
-        attack_file = 'record/' + result_file
-        self.attack_file = attack_file
-        save_path = 'record/' + result_file + '/defense/nc/'
-        if not (os.path.exists(save_path)):
-            os.makedirs(save_path)
-        # assert(os.path.exists(save_path))    
+        attack_file = args.result_base + os.path.sep + result_file
+        
+        # #######################################
+        # Modified to be compatible with the new result_base and SPC
+        # #######################################
+        if args.spc is not None:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
+        else:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
+        
+        os.makedirs(save_path, exist_ok = True)
+  
         self.args.save_path = save_path
         if self.args.checkpoint_save is None:
-            self.args.checkpoint_save = save_path + 'checkpoint/'
+            self.args.checkpoint_save = save_path + 'checkpoint' + os.path.sep
             if not (os.path.exists(self.args.checkpoint_save)):
                 os.makedirs(self.args.checkpoint_save) 
         if self.args.log is None:
-            self.args.log = save_path + 'log/'
+            self.args.log = save_path + 'log' + os.path.sep
             if not (os.path.exists(self.args.log)):
                 os.makedirs(self.args.log)  
-        self.result = load_attack_result(attack_file + '/attack_result.pt')
+        self.result = load_attack_result(attack_file + os.path.sep + 'attack_result.pt')
 
     def set_trainer(self, model):
         self.trainer = PureCleanModelTrainer(
@@ -613,27 +625,51 @@ class nc(defense):
         self.set_trainer(model)
         criterion = argparser_criterion(args)
 
-        
-
         train_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = True)
-        clean_dataset = prepro_cls_DatasetBD_v2(self.result['clean_train'].wrapped_dataset)
-        data_all_length = len(clean_dataset)
-        ran_idx = choose_index(self.args, data_all_length) 
-        log_index = self.args.log + 'index.txt'
-        np.savetxt(log_index, ran_idx, fmt='%d')
-        clean_dataset.subset(ran_idx)
-        data_set_without_tran = clean_dataset
+
+        clean_train_dataset = self.result['clean_train']
+        clean_train_wrapper = copy.deepcopy(clean_train_dataset.wrapped_dataset)
+        clean_train_wrapper = prepro_cls_DatasetBD_v2(clean_train_wrapper)
+        
+        # #######################################
+        # Modified to be compatible with SPC
+        # Note: Some methods require validation and therefore SPC cannot be 1
+        # #######################################
+        if args.spc is not None:
+            spc_use = args.spc
+            if args.spc < 1: 
+                raise Exception("SPC must be greater than 1")
+            if args.spc == 1: spc_use = 2
+            train_idx, _ = spc_choose_poisoned_sample(clean_train_wrapper, spc_use, val_ratio=0)
+        else:
+            ran_idx = choose_index(args, len(clean_train_wrapper))
+            train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
+
+
+        clean_train_wrapper.subset(train_idx)
+        print(f"Train: {len(clean_train_wrapper)}")
+
+        data_set_without_tran = clean_train_wrapper
         data_set_o = self.result['clean_train']
         data_set_o.wrapped_dataset = data_set_without_tran
         data_set_o.wrap_img_transform = train_tran
+        
+        print(f"Train: {len(data_set_o)}")
+        
         data_loader = torch.utils.data.DataLoader(data_set_o, batch_size=self.args.batch_size, num_workers=self.args.num_workers, shuffle=True, pin_memory=args.pin_memory)
         trainloader = data_loader
+        
+        clean_test_dataset_with_transform = self.result['clean_test']
+        data_clean_testset = clean_test_dataset_with_transform
+
+        bd_test_dataset_with_transform = self.result['bd_test']
+        data_bd_testset = bd_test_dataset_with_transform
 
         # a. initialize the model and trigger
-        result_path = os.getcwd() + '/' + f'{args.save_path}/nc/trigger/'
+        result_path = args.save_path + 'nc/trigger/'
         if not os.path.exists(result_path):
             os.makedirs(result_path)
-        args.output_path = result_path + "{}_output_clean.txt".format(args.dataset)
+        args.output_path = result_path + "output_clean.txt".format(args.dataset)
         if args.to_file:
             with open(args.output_path, "w+") as f:
                 f.write("Output for cleanse:  - {}".format(args.dataset) + "\n")
@@ -676,61 +712,20 @@ class nc(defense):
 
         if flag == 0:
             logging.info('This is not a backdoor model')
-            test_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = False)
-            data_bd_testset = self.result['bd_test']
-            data_bd_testset.wrap_img_transform = test_tran
-            data_bd_loader = torch.utils.data.DataLoader(data_bd_testset, batch_size=self.args.batch_size, num_workers=self.args.num_workers,drop_last=False, shuffle=True,pin_memory=args.pin_memory)
 
-            data_clean_testset = self.result['clean_test']
-            data_clean_testset.wrap_img_transform = test_tran
-            data_clean_loader = torch.utils.data.DataLoader(data_clean_testset, batch_size=self.args.batch_size, num_workers=self.args.num_workers,drop_last=False, shuffle=True,pin_memory=args.pin_memory)
-            
-            agg = Metric_Aggregator()
+            # --------------------- Final test ---------------------
+            test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, criterion, self.args)
+            logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
 
-            test_dataloader_dict = {}
-            test_dataloader_dict["clean_test_dataloader"] = data_clean_loader
-            test_dataloader_dict["bd_test_dataloader"] = data_bd_loader
-            
-            model = generate_cls_model(args.model,args.num_classes)
-            model.load_state_dict(result['model'])
-            self.set_trainer(model)
+            # save the result to a csv file in the defense_save_path
+            final_result = {
+                "test_acc": test_acc,
+                "test_asr": test_asr,
+                "test_ra": test_ra,
+            }
 
-            self.trainer.set_with_dataloader(
-                train_dataloader = trainloader,
-                test_dataloader_dict = test_dataloader_dict,
-
-                criterion = criterion,
-                optimizer = None,
-                scheduler = None,
-                device = self.args.device,
-                amp = self.args.amp,
-
-                frequency_save = self.args.frequency_save,
-                save_folder_path = self.args.save_path,
-                save_prefix = 'nc',
-
-                prefetch = self.args.prefetch,
-                prefetch_transform_attr_name = "ori_image_transform_in_loading",
-                non_blocking = self.args.non_blocking,
-
-                # continue_training_path = continue_training_path,
-                # only_load_model = only_load_model,
-            )
-            clean_test_loss_avg_over_batch, \
-                    bd_test_loss_avg_over_batch, \
-                    test_acc, \
-                    test_asr, \
-                    test_ra = self.trainer.test_current_model(
-                test_dataloader_dict, self.args.device,
-            )
-            agg({
-                    "clean_test_loss_avg_over_batch": clean_test_loss_avg_over_batch,
-                    "bd_test_loss_avg_over_batch": bd_test_loss_avg_over_batch,
-                    "test_acc": test_acc,
-                    "test_asr": test_asr,
-                    "test_ra": test_ra,
-                })
-            agg.to_dataframe().to_csv(f"{args.save_path}nc_df_summary.csv")
+            final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+            final_result_df.to_csv(os.path.join(args.save_path, "final_result.csv"))
 
             result = {}
             result['model'] = model
@@ -753,22 +748,32 @@ class nc(defense):
         data_clean_testset.wrap_img_transform = test_tran
         data_clean_loader = torch.utils.data.DataLoader(data_clean_testset, batch_size=self.args.batch_size, num_workers=self.args.num_workers,drop_last=False, shuffle=True,pin_memory=args.pin_memory)
 
-
-
-
         # d. select samples as clean samples and unlearning samples, finetune the origin model
         model = generate_cls_model(args.model,args.num_classes)
         model.load_state_dict(result['model'])
         model.to(args.device)
         train_tran = get_transform(args.dataset, *([args.input_height,args.input_width]) , train = True)
         attack_file = self.attack_file
+        
         self.result = load_attack_result(attack_file + '/attack_result.pt')
         clean_dataset = prepro_cls_DatasetBD_v2(self.result['clean_train'].wrapped_dataset)
-        data_all_length = len(clean_dataset)
-        ran_idx = choose_index(self.args, data_all_length) 
-        log_index = self.args.log + 'index.txt'
-        np.savetxt(log_index, ran_idx, fmt='%d')
-        clean_dataset.subset(ran_idx)
+       
+        # #######################################
+        # Modified to be compatible with SPC
+        # Note: Some methods require validation and therefore SPC cannot be 1
+        # #######################################
+        if args.spc is not None:
+            spc_use = args.spc
+            if args.spc < 1: 
+                raise Exception("SPC must be greater than 1")
+            if args.spc == 1: spc_use = 2
+            train_idx, _ = spc_choose_poisoned_sample(clean_dataset, spc_use, val_ratio=0)
+        else:
+            ran_idx = choose_index(args, len(clean_dataset))
+            train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
+
+        clean_dataset.subset(train_idx)
+
         data_set_without_tran = clean_dataset
         data_set_o = self.result['clean_train']
         data_set_o.wrapped_dataset = data_set_without_tran
@@ -810,7 +815,7 @@ class nc(defense):
                 x_np_img = Image.fromarray(x_np)
                 x_unlearn_new.extend([x_np_img])
                 y_unlearn_new.extend([data_set_o.wrapped_dataset[ii][1]])
-                original_index_array_new.extend([len(x_new)+len(x_unlearn_new)-1])
+                original_index_array_new.extend([len(x_new)-1])
                 poison_indicator_new.extend([0])
             x_new.extend(x_unlearn_new)
             y_new.extend(y_unlearn_new)
@@ -841,6 +846,20 @@ class nc(defense):
             prefetch_transform_attr_name="ori_image_transform_in_loading", # since we use the preprocess_bd_dataset
             non_blocking=args.non_blocking,
         )
+        
+        # --------------------- Final test ---------------------
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, criterion, self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(args.save_path, "final_result.csv"))
         
         result = {}
         result['model'] = model

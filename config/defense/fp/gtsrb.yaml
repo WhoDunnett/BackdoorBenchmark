@@ -1,16 +1,15 @@
 device: 'cuda'
-dataset_path: 'data/'
+amp: True
+non_blocking: True
+num_workers: 4
 
-dataset: 'cifar10'
-num_classes: 
-input_height: 
-input_width:
-input_channel:
+dataset_path: '../data'
+dataset: 'gtsrb'
 
 epochs: 100
 frequency_save: 0
 batch_size: 256
-num_workers: 4
+
 lr: 0.01
 lr_scheduler: CosineAnnealingLR
 
@@ -20,18 +19,7 @@ client_optimizer: sgd
 sgd_momentum: 0.9
 wd: 0.0005
 
-poison_rate: 0.1
-target_type: 'all2one'
-target_label: 0
-trigger_type: 'squareTrigger'
-
-model: 'preactresnet18'
-random_seed: 0
-index: 
-
-amp: True
 acc_ratio: 0.1
-ratio: 0.05
-non_blocking: True
+val_ratio: 0.1
 once_prune_ratio: 0.01
-
+index:

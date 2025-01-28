@@ -27,7 +27,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pandas as pd
 
+os.chdir(sys.path[0])
 sys.path.append('../')
 sys.path.append(os.getcwd())
 
@@ -39,14 +41,14 @@ import random
 from defense.base import defense
 
 from utils.aggregate_block.train_settings_generate import argparser_opt_scheduler
-from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer, general_plot_for_epoch, given_dataloader_test
+from utils.trainer_cls import Metric_Aggregator, PureCleanModelTrainer, general_plot_for_epoch, given_dataloader_test, given_dataloader_test_v2
 from utils.choose_index import choose_index
 from utils.aggregate_block.fix_random import fix_random
 from utils.aggregate_block.model_trainer_generate import generate_cls_model
 from utils.log_assist import get_git_info
 from utils.aggregate_block.dataset_and_transform_generate import get_input_shape, get_num_classes, get_transform, get_dataset_normalization, get_dataset_denormalization
 from utils.save_load_attack import load_attack_result, save_defense_result
-from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2
+from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, spc_choose_poisoned_sample
 
 from itertools import repeat
 import torchvision.transforms as transforms
@@ -227,6 +229,7 @@ class sau(defense):
         parser.add_argument("--dataset_path", type=str, help='the location of data')
         parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
         parser.add_argument('--result_file', type=str, help='the location of result')
+        parser.add_argument('--result_base', type=str, help='the location of result base path', default = "../record")
     
         parser.add_argument('--epochs', type=int)
         parser.add_argument('--batch_size', type=int)
@@ -251,6 +254,7 @@ class sau(defense):
         ###### sau defense parameter ######
         # defense setting
         parser.add_argument('--ratio', type=float, help='the ratio of clean data loader')
+        parser.add_argument('--spc', type=int, help='the samples per class used for training')
         parser.add_argument('--index', type=str, help='index of clean data')
 
         # hyper params
@@ -295,22 +299,28 @@ class sau(defense):
 
 
     def set_result(self, result_file):
-        attack_file = 'record/' + result_file
-        save_path = 'record/' + result_file + f'/defense/sau/'
-        if not (os.path.exists(save_path)):
-            os.makedirs(save_path)
-        # assert(os.path.exists(save_path))    
+        attack_file = args.result_base + os.path.sep + result_file
+        
+        # #######################################
+        # Modified to be compatible with the new result_base and SPC
+        # #######################################
+        if args.spc is not None:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'spc_{args.spc}' + os.path.sep + str(args.random_seed)
+        else:
+            save_path = args.result_base + os.path.sep + args.result_file + os.path.sep + "defense" + os.path.sep + "fst" + os.path.sep + f'ratio_{args.ratio}' + os.path.sep + str(args.random_seed)
+        
+        os.makedirs(save_path, exist_ok = True)
+  
         self.args.save_path = save_path
         if self.args.checkpoint_save is None:
-            self.args.checkpoint_save = save_path + 'checkpoint/'
+            self.args.checkpoint_save = save_path + 'checkpoint' + os.path.sep
             if not (os.path.exists(self.args.checkpoint_save)):
                 os.makedirs(self.args.checkpoint_save) 
         if self.args.log is None:
-            self.args.log = save_path + 'log/'
+            self.args.log = save_path + 'log' + os.path.sep
             if not (os.path.exists(self.args.log)):
                 os.makedirs(self.args.log)  
-        self.result = load_attack_result(attack_file + '/attack_result.pt')
-
+        self.result = load_attack_result(attack_file + os.path.sep + 'attack_result.pt')
 
     def set_logger(self):
         args = self.args
@@ -366,15 +376,28 @@ class sau(defense):
         logging.info("Fetch some samples from clean train dataset.")
 
         train_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = False)
-
         clean_dataset = prepro_cls_DatasetBD_v2(self.result['clean_train'].wrapped_dataset)
-        data_all_length = len(clean_dataset)
-        ran_idx = choose_index(self.args, data_all_length)
+
+        # #######################################
+        # Modified to be compatible with SPC
+        # Note: Some methods require validation and therefore SPC cannot be 1
+        # #######################################
+        if args.spc is not None:
+            spc_use = args.spc
+            if args.spc < 1: 
+                raise Exception("SPC must be greater than 1")
+            if args.spc == 1: spc_use = 2
+            train_idx, _ = spc_choose_poisoned_sample(clean_dataset, spc_use, val_ratio=0)
+        else:
+            ran_idx = choose_index(args, len(clean_dataset))
+            train_idx = np.random.choice(len(ran_idx), int(len(ran_idx) * (1-args.val_ratio)), replace=False)
+
         log_index = self.args.log + 'index.txt'
-        np.savetxt(log_index, ran_idx, fmt='%d')
+        np.savetxt(log_index, train_idx, fmt='%d')
+        clean_dataset.subset(train_idx)
 
-        clean_dataset.subset(ran_idx)
-
+        logging.info(f"Number of samples in clean train dataset: {len(clean_dataset)}")
+  
         data_set_without_tran = clean_dataset
         data_set_o = self.result['clean_train']
         data_set_o.wrapped_dataset = data_set_without_tran
@@ -574,6 +597,23 @@ class sau(defense):
 
             agg.to_dataframe().to_csv(f"{args.save_path}sau_df.csv")
         agg.summary().to_csv(f"{args.save_path}sau_df_summary.csv")
+
+        # ------------------------------- Final Test -------------------------------
+        criterion = torch.nn.CrossEntropyLoss()
+        test_acc, test_asr, test_ra = given_dataloader_test_v2(model, data_clean_testset, data_bd_testset, criterion, self.args)
+        logging.info(f'Final test_acc:{test_acc}  test_asr:{test_asr}  test_ra:{test_ra}')
+
+        # save the result to a csv file in the defense_save_path
+        final_result = {
+            "test_acc": test_acc,
+            "test_asr": test_asr,
+            "test_ra": test_ra,
+        }
+        
+        print(os.path.join(args.save_path, "final_result.csv"))
+
+        final_result_df = pd.DataFrame(final_result, columns=["test_acc", "test_asr", "test_ra"], index=[0])
+        final_result_df.to_csv(os.path.join(args.save_path, "final_result.csv"))
 
         result = {}
         result['model'] = model
