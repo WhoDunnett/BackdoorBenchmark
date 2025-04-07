@@ -410,7 +410,7 @@ class RNP(defense):
             # NOTE: The original codebase has a bug where the learning rate is to large
             # We therefore reduce the learning rate by a factor of 10 if an exception is thrown
             try:
-                unlearn_model = self.load_model_replica(mask_bn=False)
+                unlearn_model = self.load_model_replica(weights=self.attack_result['model'], mask_bn=True)
                 unlearn_model.train()
                 unlearn_model.requires_grad_(True)
                 
