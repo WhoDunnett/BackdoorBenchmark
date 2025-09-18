@@ -1,6 +1,8 @@
 # Countering Backdoor Attacks in Image Recognition: A Survey and Evaluation of Mitigation Strategies
 This fork of BackdoorBench contains the modifications made to perform the evaluation conducted in our paper (https://arxiv.org/abs/2411.11200). Full credit to the original producers of BackdoorBench as much of this code remains the same. The modifications that have been made are listed below.
 
+This also contains the implementation to perform the evaluation of IMS conducted in our NeurIPS 2025 paper (LINK SOON). 
+
 Corresponding Author: kealan.dunnett@hdr.qut.edu.au (Kealan Dunnett)
 
 ## Compatible Defenses
@@ -68,6 +70,11 @@ python3 defense/sau.py --yaml_path ../config/defense/sau/cifar10.yaml --model pr
 - MM-BD (Migrated TESTED) [NEW METHOD]
 ```
 python defense/mm-bd.py --yaml_path ../config/defense/mm-bd/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
+
+- IMS [Our method accepted at NeurIPS 2025]
+```
+ADDED SOON
 ```
 
 #### Major Changes
