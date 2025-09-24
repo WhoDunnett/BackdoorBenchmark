@@ -1,0 +1,28 @@
+device: 'cuda:0'
+dataset_path: '../data'
+
+num_classes: 
+input_height: 
+input_width:
+input_channel:
+
+batch_size: 256
+num_workers: 4 
+
+k: 20
+l1_weight: 0
+norm_bound: 1
+
+lr_mask: 0.02
+lr_peturb: 0.001
+
+num_steps_peturb: 20
+max_initial_rounds: 100
+max_minimize_rounds: 200
+
+patience: 25
+improvement_threshold: 0.98
+
+pin_memory: True
+prefetch: False
+non_blocking: True

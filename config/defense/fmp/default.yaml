@@ -1,0 +1,23 @@
+device: 'cuda'
+dataset_path: '../data'
+
+dataset: 'cifar10'
+num_classes: 
+input_height: 
+input_width:
+input_channel:
+
+batch_size: 256
+num_workers: 0
+
+pin_memory: True
+prefetch: False
+non_blocking: True
+
+adv_dataset_size: 32
+eps: 0.00392156862
+
+lr: 0.01
+momentum: 0.9
+epochs: 10
+eta_min: 0.0001

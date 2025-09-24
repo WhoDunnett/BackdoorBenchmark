@@ -71,10 +71,25 @@ python3 defense/sau.py --yaml_path ../config/defense/sau/cifar10.yaml --model pr
 ```
 python defense/mm-bd.py --yaml_path ../config/defense/mm-bd/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
 ```
-
+- BTI-DBF (Migrated TESTED) [NEW METHOD]
+```
+python defense/btidbf-u.py --yaml_path ../config/defense/btidbf-u/cifar10.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
+- NFT (Migrated TESTED) [NEW METHOD]
+```
+python defense/nft.py --yaml_path ../config/defense/nft/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
+- FMP (Migrated TESTED) [NEW METHOD]
+```
+python defense/fmp.py --yaml_path ../config/defense/fmp/default.yaml --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1 --dataset cifar10
+```
 - IMS [Our method accepted at NeurIPS 2025]
 ```
-ADDED SOON
+python defense/ims.py --yaml_path ../config/defense/ims/default.yaml --dataset cifar10 --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
+```
+- IMS (ViT) [Our method accepted at NeurIPS 2025]
+```
+python defense/ims_vit.py --yaml_path ../config/defense/ims_vit/default.yaml --dataset cifar10 --model preactresnet18 --spc 10 --random_seed 1 --result_base ../record_cifar10 --result_file badnet_preactresnet18_pratio_0.1
 ```
 
 #### Major Changes
